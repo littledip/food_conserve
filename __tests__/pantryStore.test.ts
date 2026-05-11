@@ -1,5 +1,10 @@
 import { GroceryItem } from '../types/grocery';
-import { daysUntil, filterByDaysUntil } from '../stores/pantryStore';
+import {
+  daysUntil,
+  filterByDaysUntil,
+  fractionalUseAmount,
+  usePantryStore,
+} from '../stores/pantryStore';
 
 const NOW = new Date('2026-05-09T12:00:00Z');
 const offsetDay = (n: number) => new Date(NOW.getTime() + n * 86400000);
@@ -102,5 +107,279 @@ describe('filterByDaysUntil', () => {
     expect(result.map((i) => i.id)).toEqual([
       'one-week', 'five-days', 'two-days', 'tomorrow', 'today', 'expired',
     ]);
+  });
+});
+
+describe('store actions: consumeItem', () => {
+  beforeEach(() => {
+    usePantryStore.setState({
+      items: [
+        makeItem('a', 5),
+        makeItem('b', 3),
+        makeItem('c', 1),
+      ],
+    });
+  });
+
+  it('decrements remainingQuantity by the consumed amount', () => {
+    usePantryStore.getState().consumeItem('a', 0.4);
+    const a = usePantryStore.getState().items.find((i) => i.id === 'a');
+    expect(a?.remainingQuantity).toBeCloseTo(0.6);
+  });
+
+  it('clamps to 0 (does not go negative on over-use)', () => {
+    usePantryStore.getState().consumeItem('a', 999);
+    const a = usePantryStore.getState().items.find((i) => i.id === 'a');
+    expect(a?.remainingQuantity).toBe(0);
+  });
+
+  it('is a no-op for an unknown id', () => {
+    const before = usePantryStore.getState().items;
+    usePantryStore.getState().consumeItem('nonexistent', 0.5);
+    const after = usePantryStore.getState().items;
+    expect(after.map((i) => i.remainingQuantity)).toEqual(before.map((i) => i.remainingQuantity));
+  });
+
+  it('does not modify other items', () => {
+    usePantryStore.getState().consumeItem('a', 0.5);
+    const b = usePantryStore.getState().items.find((i) => i.id === 'b');
+    const c = usePantryStore.getState().items.find((i) => i.id === 'c');
+    expect(b?.remainingQuantity).toBe(1);
+    expect(c?.remainingQuantity).toBe(1);
+  });
+});
+
+describe('store actions: removeItem', () => {
+  beforeEach(() => {
+    usePantryStore.setState({
+      items: [
+        makeItem('a', 5),
+        makeItem('b', 3),
+        makeItem('c', 1),
+      ],
+    });
+  });
+
+  it('removes the matching item', () => {
+    usePantryStore.getState().removeItem('b');
+    const ids = usePantryStore.getState().items.map((i) => i.id);
+    expect(ids).toEqual(['a', 'c']);
+  });
+
+  it('leaves other items untouched', () => {
+    usePantryStore.getState().removeItem('a');
+    const items = usePantryStore.getState().items;
+    expect(items).toHaveLength(2);
+    expect(items.every((i) => i.remainingQuantity === 1)).toBe(true);
+  });
+
+  it('is a no-op for an unknown id', () => {
+    usePantryStore.getState().removeItem('nonexistent');
+    const ids = usePantryStore.getState().items.map((i) => i.id);
+    expect(ids).toEqual(['a', 'b', 'c']);
+  });
+
+  it('handles removing the last item', () => {
+    usePantryStore.setState({ items: [makeItem('only', 5)] });
+    usePantryStore.getState().removeItem('only');
+    expect(usePantryStore.getState().items).toEqual([]);
+  });
+});
+
+describe('store actions: disposeItem', () => {
+  beforeEach(() => {
+    usePantryStore.setState({
+      items: [
+        makeItem('future', 5),
+        makeItem('today', 0),
+        makeItem('past', -3),
+      ],
+      dispositionLog: [],
+    });
+  });
+
+  it("disposeItem('used') removes the item and logs a Used event", () => {
+    usePantryStore.getState().disposeItem('future', 'used');
+    const state = usePantryStore.getState();
+    expect(state.items.map((i) => i.id)).toEqual(['today', 'past']);
+    expect(state.dispositionLog).toHaveLength(1);
+    expect(state.dispositionLog[0]).toMatchObject({
+      itemId: 'future',
+      itemName: 'future',
+      disposition: 'used',
+      quantity: 1,
+    });
+  });
+
+  it("disposeItem('wasted') removes the item and logs a Wasted event", () => {
+    usePantryStore.getState().disposeItem('today', 'wasted');
+    const state = usePantryStore.getState();
+    expect(state.items.map((i) => i.id)).toEqual(['future', 'past']);
+    expect(state.dispositionLog[0]).toMatchObject({
+      itemId: 'today',
+      disposition: 'wasted',
+      quantity: 1,
+    });
+  });
+
+  it('records expiredAtTime: true when expiration is in the past', () => {
+    usePantryStore.getState().disposeItem('past', 'wasted');
+    const event = usePantryStore.getState().dispositionLog[0];
+    expect(event.expiredAtTime).toBe(true);
+  });
+
+  it('records expiredAtTime: false when expiration is in the future', () => {
+    usePantryStore.getState().disposeItem('future', 'used');
+    const event = usePantryStore.getState().dispositionLog[0];
+    expect(event.expiredAtTime).toBe(false);
+  });
+
+  it('is a no-op for an unknown id (no event logged, items unchanged)', () => {
+    const before = usePantryStore.getState();
+    usePantryStore.getState().disposeItem('nonexistent', 'used');
+    const after = usePantryStore.getState();
+    expect(after.items).toEqual(before.items);
+    expect(after.dispositionLog).toEqual([]);
+  });
+});
+
+describe('fractionalUseAmount', () => {
+  it('Brown rice: 1.5 of 2 lbs remaining, "Used half" should consume 0.75 (half of remaining), not 1.0 (half of original)', () => {
+    const rice: GroceryItem = {
+      ...makeItem('rice', 7),
+      name: 'Brown rice',
+      originalQuantity: 2,
+      remainingQuantity: 1.5,
+    };
+    expect(fractionalUseAmount(rice, 2)).toBeCloseTo(0.75);
+  });
+
+  it('Eggs: 9 of 12 remaining, "Used a third" consumes 3 (a third of remaining)', () => {
+    const eggs: GroceryItem = {
+      ...makeItem('eggs', 7),
+      originalQuantity: 12,
+      remainingQuantity: 9,
+    };
+    expect(fractionalUseAmount(eggs, 3)).toBeCloseTo(3);
+  });
+
+  it('Fresh item (remaining === original): "Used half" consumes half', () => {
+    const fresh: GroceryItem = {
+      ...makeItem('fresh', 7),
+      originalQuantity: 1,
+      remainingQuantity: 1,
+    };
+    expect(fractionalUseAmount(fresh, 2)).toBeCloseTo(0.5);
+  });
+});
+
+describe('store actions: moveItem (freezer)', () => {
+  const DAY_MS = 86400000;
+
+  const freezableItem = (id: string, opts: Partial<GroceryItem> = {}): GroceryItem => ({
+    ...makeItem(id, 5),
+    isFreezable: true,
+    storageLocation: 'fridge',
+    storageHistory: [{ eventType: 'added', location: 'fridge', date: NOW }],
+    ...opts,
+  });
+
+  beforeEach(() => {
+    usePantryStore.setState({ items: [freezableItem('a')], dispositionLog: [] });
+  });
+
+  it("moves item to 'freezer' and appends a moved_to_freezer event to storageHistory", () => {
+    usePantryStore.getState().moveItem('a', 'freezer');
+    const item = usePantryStore.getState().items[0];
+    expect(item.storageLocation).toBe('freezer');
+    const last = item.storageHistory[item.storageHistory.length - 1];
+    expect(last.eventType).toBe('moved_to_freezer');
+    expect(last.location).toBe('freezer');
+  });
+
+  it('sets freezerExpirationDate to default (~90 days out) when not previously set', () => {
+    usePantryStore.getState().moveItem('a', 'freezer');
+    const item = usePantryStore.getState().items[0];
+    expect(item.freezerExpirationDate).toBeDefined();
+    const days = Math.round((item.freezerExpirationDate!.getTime() - Date.now()) / DAY_MS);
+    expect(days).toBeGreaterThanOrEqual(89);
+    expect(days).toBeLessThanOrEqual(91);
+  });
+
+  it('uses existing freezerExpirationDate when already set', () => {
+    const customExp = new Date('2026-09-01T00:00:00Z');
+    usePantryStore.setState({
+      items: [freezableItem('a', { freezerExpirationDate: customExp })],
+      dispositionLog: [],
+    });
+    usePantryStore.getState().moveItem('a', 'freezer');
+    const item = usePantryStore.getState().items[0];
+    expect(item.freezerExpirationDate).toEqual(customExp);
+  });
+
+  it('updates effectiveExpirationDate to the freezer expiration date', () => {
+    usePantryStore.getState().moveItem('a', 'freezer');
+    const item = usePantryStore.getState().items[0];
+    expect(item.effectiveExpirationDate).toEqual(item.freezerExpirationDate);
+  });
+
+  it('refreezing (after a moved_to_fridge event) increments thawCycleCount', () => {
+    usePantryStore.setState({
+      items: [freezableItem('a', {
+        storageLocation: 'fridge',
+        thawCycleCount: 0,
+        storageHistory: [
+          { eventType: 'added', location: 'fridge', date: NOW },
+          { eventType: 'moved_to_freezer', location: 'freezer', date: NOW },
+          { eventType: 'moved_to_fridge', location: 'fridge', date: NOW },
+        ],
+      })],
+      dispositionLog: [],
+    });
+    usePantryStore.getState().moveItem('a', 'freezer');
+    const item = usePantryStore.getState().items[0];
+    expect(item.thawCycleCount).toBe(1);
+  });
+
+  it('first freeze (no prior moved_to_fridge in history) does not increment thawCycleCount', () => {
+    usePantryStore.getState().moveItem('a', 'freezer');
+    const item = usePantryStore.getState().items[0];
+    expect(item.thawCycleCount).toBe(0);
+  });
+
+  it('is a no-op when target location equals current location', () => {
+    usePantryStore.setState({
+      items: [freezableItem('a', { storageLocation: 'freezer' })],
+      dispositionLog: [],
+    });
+    const before = usePantryStore.getState().items[0];
+    usePantryStore.getState().moveItem('a', 'freezer');
+    const after = usePantryStore.getState().items[0];
+    expect(after).toEqual(before);
+  });
+});
+
+describe('store actions: consumeItem logs Used events', () => {
+  beforeEach(() => {
+    usePantryStore.setState({
+      items: [makeItem('a', 5)],
+      dispositionLog: [],
+    });
+  });
+
+  it('appends a Used event with the consumed quantity', () => {
+    usePantryStore.getState().consumeItem('a', 0.4);
+    const log = usePantryStore.getState().dispositionLog;
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatchObject({
+      itemId: 'a',
+      disposition: 'used',
+      quantity: 0.4,
+    });
+  });
+
+  it('does not log when called with an unknown id', () => {
+    usePantryStore.getState().consumeItem('nonexistent', 0.5);
+    expect(usePantryStore.getState().dispositionLog).toEqual([]);
   });
 });

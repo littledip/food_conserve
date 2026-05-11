@@ -13,7 +13,14 @@ import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../constants/theme';
 import { GroceryItem, ItemCategory, GroupedPantryItems } from '../../types/grocery';
-import { useAllItems, useUpdateItem } from '../../stores/pantryStore';
+import {
+  useAllItems,
+  useUpdateItem,
+  useConsumeItem,
+  useDisposeItem,
+  useMoveItem,
+  fractionalUseAmount,
+} from '../../stores/pantryStore';
 
 const CATEGORY_ORDER: ItemCategory[] = [
   'protein', 'produce', 'dairy', 'grains',
@@ -73,20 +80,22 @@ function dotColor(item: GroceryItem): string {
   return COLORS.midGreen;
 }
 
-function ItemRow({ item, onCategorize }: { item: GroceryItem; onCategorize?: () => void }) {
+function ItemRow({ item, onPress }: { item: GroceryItem; onPress: () => void }) {
   const d = daysUntil(item.effectiveExpirationDate);
   const isUrgent = d <= 1;
   const label = formatDays(item.effectiveExpirationDate);
 
-  const rowStyle = [
-    styles.itemRow,
-    isUrgent
-      ? { backgroundColor: COLORS.itemBgUrgent, borderColor: COLORS.itemBorderUrgent }
-      : { backgroundColor: COLORS.itemBgNormal, borderColor: COLORS.itemBorderOk },
-  ];
-
-  const inner = (
-    <>
+  return (
+    <TouchableOpacity
+      style={[
+        styles.itemRow,
+        isUrgent
+          ? { backgroundColor: COLORS.itemBgUrgent, borderColor: COLORS.itemBorderUrgent }
+          : { backgroundColor: COLORS.itemBgNormal, borderColor: COLORS.itemBorderOk },
+      ]}
+      onPress={onPress}
+      activeOpacity={0.7}
+    >
       <View style={styles.itemInner}>
         <View style={[styles.itemDot, { backgroundColor: dotColor(item) }]} />
         <Text style={styles.itemName}>{item.name}</Text>
@@ -104,34 +113,20 @@ function ItemRow({ item, onCategorize }: { item: GroceryItem; onCategorize?: () 
           <Text style={styles.freezeText}>Freezable — save it today</Text>
         </View>
       )}
-      {onCategorize && (
-        <View style={styles.categorizeBadge}>
-          <Text style={styles.categorizeText}>Categorize ›</Text>
-        </View>
-      )}
-    </>
+    </TouchableOpacity>
   );
-
-  if (onCategorize) {
-    return (
-      <TouchableOpacity style={rowStyle} onPress={onCategorize} activeOpacity={0.7}>
-        {inner}
-      </TouchableOpacity>
-    );
-  }
-  return <View style={rowStyle}>{inner}</View>;
 }
 
 function CategoryGroup({
   group,
   isExpanded,
   onToggle,
-  onCategorize,
+  onSelectItem,
 }: {
   group: GroupedPantryItems;
   isExpanded: boolean;
   onToggle: () => void;
-  onCategorize: (itemId: string) => void;
+  onSelectItem: (itemId: string) => void;
 }) {
   const urgentItems = group.items.filter((i) => daysUntil(i.effectiveExpirationDate) <= 2);
   const freshItems = group.items.filter((i) => daysUntil(i.effectiveExpirationDate) > 2);
@@ -189,10 +184,7 @@ function CategoryGroup({
         <View style={styles.itemsContainer}>
           {group.items.map((item, idx) => (
             <View key={item.id} style={idx === group.items.length - 1 ? undefined : { marginBottom: 3 }}>
-              <ItemRow
-                item={item}
-                onCategorize={group.category === 'other' ? () => onCategorize(item.id) : undefined}
-              />
+              <ItemRow item={item} onPress={() => onSelectItem(item.id)} />
             </View>
           ))}
         </View>
@@ -217,11 +209,54 @@ export default function PantryScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedCategory, setExpandedCategory] = useState<ItemCategory | null>('protein');
   const [filterVisible, setFilterVisible] = useState(false);
-  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [customAmount, setCustomAmount] = useState('');
 
   const items = useAllItems();
   const updateItem = useUpdateItem();
+  const consumeItem = useConsumeItem();
+  const disposeItem = useDisposeItem();
+  const moveItem = useMoveItem();
   const groups = groupAndFilterItems(items, searchQuery);
+  const selectedItem = selectedItemId ? items.find((i) => i.id === selectedItemId) ?? null : null;
+
+  const closeSheet = () => {
+    setSelectedItemId(null);
+    setCustomAmount('');
+  };
+
+  const useAll = () => {
+    if (selectedItemId) disposeItem(selectedItemId, 'used');
+    closeSheet();
+  };
+
+  const useFraction = (denom: number) => {
+    if (!selectedItem) return;
+    consumeItem(selectedItem.id, fractionalUseAmount(selectedItem, denom));
+    closeSheet();
+  };
+
+  const applyCustom = () => {
+    if (!selectedItem) return;
+    const parsed = parseFloat(customAmount);
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    if (parsed >= selectedItem.remainingQuantity) {
+      disposeItem(selectedItem.id, 'used');
+    } else {
+      consumeItem(selectedItem.id, parsed);
+    }
+    closeSheet();
+  };
+
+  const wasteAll = () => {
+    if (selectedItemId) disposeItem(selectedItemId, 'wasted');
+    closeSheet();
+  };
+
+  const freeze = () => {
+    if (selectedItemId) moveItem(selectedItemId, 'freezer');
+    closeSheet();
+  };
 
   useEffect(() => {
     if (params.expand && VALID_CATEGORIES.has(params.expand as ItemCategory)) {
@@ -268,7 +303,7 @@ export default function PantryScreen() {
             group={group}
             isExpanded={expandedCategory === group.category}
             onToggle={() => toggleCategory(group.category)}
-            onCategorize={setEditingItemId}
+            onSelectItem={setSelectedItemId}
           />
         ))}
       </ScrollView>
@@ -324,35 +359,99 @@ export default function PantryScreen() {
         </View>
       </Modal>
 
-      {/* Categorize picker (only reachable from Other-group rows) */}
+      {/* Item detail sheet */}
       <Modal
-        visible={editingItemId !== null}
+        visible={selectedItem !== null}
         transparent
         animationType="slide"
-        onRequestClose={() => setEditingItemId(null)}
+        onRequestClose={closeSheet}
       >
         <TouchableOpacity
           style={styles.modalOverlay}
           activeOpacity={1}
-          onPress={() => setEditingItemId(null)}
+          onPress={closeSheet}
         />
-        <View style={[styles.pickerPanel, { paddingBottom: insets.bottom + 16 }]}>
-          <Text style={styles.pickerPanelTitle}>Move to category</Text>
-          {RECATEGORIZE_OPTIONS.map((cat) => (
+        {selectedItem && (
+          <View style={[styles.detailSheet, { paddingBottom: insets.bottom + 16 }]}>
+            <Text style={styles.detailHeader}>{selectedItem.name}</Text>
+            <Text style={styles.detailMeta}>
+              {selectedItem.remainingQuantity} of {selectedItem.originalQuantity} {selectedItem.unitOfMeasure} remaining
+            </Text>
+
+            <Text style={styles.detailSectionLabel}>Mark as used</Text>
+            <View style={styles.presetRow}>
+              <TouchableOpacity style={styles.presetButton} onPress={useAll} activeOpacity={0.7}>
+                <Text style={styles.presetButtonText}>Used all</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.presetButton} onPress={() => useFraction(2)} activeOpacity={0.7}>
+                <Text style={styles.presetButtonText}>Used half</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.presetButton} onPress={() => useFraction(3)} activeOpacity={0.7}>
+                <Text style={styles.presetButtonText}>Used a third</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.customRow}>
+              <TextInput
+                style={styles.customInput}
+                value={customAmount}
+                onChangeText={setCustomAmount}
+                keyboardType="decimal-pad"
+                placeholder="0"
+                placeholderTextColor={COLORS.textSecondary}
+              />
+              <Text style={styles.customUnit}>{selectedItem.unitOfMeasure}</Text>
+              <TouchableOpacity
+                style={[styles.applyCustomButton, !customAmount && styles.applyCustomDisabled]}
+                onPress={applyCustom}
+                activeOpacity={0.7}
+                disabled={!customAmount}
+              >
+                <Text style={styles.applyCustomText}>Apply</Text>
+              </TouchableOpacity>
+            </View>
+
+            {selectedItem.isFreezable && selectedItem.storageLocation !== 'freezer' && (
+              <TouchableOpacity
+                style={styles.freezeButton}
+                onPress={freeze}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="snow-outline" size={16} color={COLORS.freezeText} />
+                <Text style={styles.freezeButtonText}>Move to freezer</Text>
+              </TouchableOpacity>
+            )}
+
             <TouchableOpacity
-              key={cat}
-              style={styles.pickerOption}
+              style={styles.wastedButton}
+              onPress={wasteAll}
               activeOpacity={0.7}
-              onPress={() => {
-                if (editingItemId) updateItem(editingItemId, { category: cat });
-                setEditingItemId(null);
-                setExpandedCategory(cat);
-              }}
             >
-              <Text style={styles.pickerOptionText}>{CATEGORY_LABELS[cat]}</Text>
+              <Ionicons name="trash-outline" size={16} color={COLORS.redDark} />
+              <Text style={styles.wastedButtonText}>Threw it out</Text>
             </TouchableOpacity>
-          ))}
-        </View>
+
+            {selectedItem.category === 'other' && (
+              <>
+                <Text style={styles.detailSectionLabel}>Move to category</Text>
+                {RECATEGORIZE_OPTIONS.map((cat) => (
+                  <TouchableOpacity
+                    key={cat}
+                    style={styles.pickerOption}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      updateItem(selectedItem.id, { category: cat });
+                      setExpandedCategory(cat);
+                      closeSheet();
+                    }}
+                  >
+                    <Text style={styles.pickerOptionText}>{CATEGORY_LABELS[cat]}</Text>
+                  </TouchableOpacity>
+                ))}
+              </>
+            )}
+          </View>
+        )}
       </Modal>
     </View>
   );
@@ -513,17 +612,116 @@ const styles = StyleSheet.create({
     color: COLORS.freezeText,
     fontSize: 10,
   },
-  categorizeBadge: {
-    backgroundColor: COLORS.statCardBg,
-    paddingVertical: 1,
-    paddingHorizontal: 4,
-    borderRadius: 3,
-    alignSelf: 'flex-start',
-    marginTop: 2,
+  detailSheet: {
+    backgroundColor: COLORS.cardWhite,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    padding: 16,
   },
-  categorizeText: {
+  detailHeader: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: COLORS.darkGreen,
+  },
+  detailMeta: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+    marginBottom: 12,
+  },
+  detailSectionLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  presetRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  presetButton: {
+    flex: 1,
+    backgroundColor: COLORS.statCardBg,
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  presetButtonText: {
     color: COLORS.primaryGreen,
-    fontSize: 10,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  customRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+  },
+  customInput: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+    borderWidth: 0.5,
+    borderColor: COLORS.borderColor,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    fontSize: 13,
+    color: COLORS.darkGreen,
+  },
+  customUnit: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    minWidth: 32,
+  },
+  applyCustomButton: {
+    backgroundColor: COLORS.primaryGreen,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  applyCustomDisabled: {
+    backgroundColor: COLORS.borderColor,
+  },
+  applyCustomText: {
+    color: '#EAF3DE',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  freezeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: COLORS.freezeBg,
+    borderWidth: 0.5,
+    borderColor: COLORS.freezeText,
+    borderRadius: 8,
+    paddingVertical: 10,
+    marginTop: 12,
+  },
+  freezeButtonText: {
+    color: COLORS.freezeText,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  wastedButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: COLORS.alertCardBg,
+    borderWidth: 0.5,
+    borderColor: COLORS.alertBorder,
+    borderRadius: 8,
+    paddingVertical: 10,
+    marginTop: 8,
+  },
+  wastedButtonText: {
+    color: COLORS.redDark,
+    fontSize: 13,
     fontWeight: '500',
   },
   pickerPanel: {

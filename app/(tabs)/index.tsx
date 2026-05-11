@@ -1,5 +1,6 @@
-import { View, Text, ScrollView, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../constants/theme';
 import { MOCK_STATS } from '../../constants/mockData';
 import { GroceryItem } from '../../types/grocery';
@@ -8,6 +9,8 @@ import {
   useItemCount,
   useUpcomingWeek,
   useExpiringThisWeekCount,
+  useDisposeItem,
+  useMoveItem,
 } from '../../stores/pantryStore';
 
 const UPCOMING_LIST_MAX_HEIGHT = 220;
@@ -32,6 +35,12 @@ function UrgencyLabel({ item }: { item: GroceryItem }) {
   );
 }
 
+function getTrashEmphasis(d: number): { name: 'trash' | 'trash-outline'; color: string } {
+  if (d < 0) return { name: 'trash', color: COLORS.redDot };
+  if (d === 0) return { name: 'trash-outline', color: COLORS.redText };
+  return { name: 'trash-outline', color: COLORS.textSecondary };
+}
+
 function UpcomingRow({ item }: { item: GroceryItem }) {
   const d = daysUntil(item.effectiveExpirationDate);
   const dotColor = d <= 3 ? COLORS.orange : COLORS.midGreen;
@@ -54,6 +63,8 @@ export default function HomeScreen() {
   const upcoming = useUpcomingWeek()
     .slice()
     .sort((a, b) => a.effectiveExpirationDate.getTime() - b.effectiveExpirationDate.getTime());
+  const disposeItem = useDisposeItem();
+  const moveItem = useMoveItem();
 
   return (
     <View style={styles.root}>
@@ -110,12 +121,49 @@ export default function HomeScreen() {
               <Text style={styles.alertTitle}>
                 {urgentItems.length} {urgentItems.length === 1 ? 'item' : 'items'} expiring today or tomorrow
               </Text>
-              {urgentItems.map((item) => (
-                <View key={item.id} style={styles.alertRow}>
-                  <UrgencyDot item={item} />
-                  <UrgencyLabel item={item} />
-                </View>
-              ))}
+              {urgentItems.map((item) => {
+                const trash = getTrashEmphasis(daysUntil(item.effectiveExpirationDate));
+                const showFreezeBadge = item.isFreezable && item.storageLocation !== 'freezer';
+                return (
+                  <View key={item.id}>
+                    <View style={styles.alertRow}>
+                      <UrgencyDot item={item} />
+                      <View style={styles.alertLabelWrap}>
+                        <UrgencyLabel item={item} />
+                      </View>
+                      <View style={styles.alertActions}>
+                        <TouchableOpacity
+                          onPress={() => disposeItem(item.id, 'used')}
+                          activeOpacity={0.6}
+                          hitSlop={6}
+                          accessibilityLabel={`Mark ${item.name} as used`}
+                        >
+                          <Ionicons name="checkmark-circle-outline" size={22} color={COLORS.midGreen} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => disposeItem(item.id, 'wasted')}
+                          activeOpacity={0.6}
+                          hitSlop={6}
+                          accessibilityLabel={`Mark ${item.name} as wasted`}
+                        >
+                          <Ionicons name={trash.name} size={22} color={trash.color} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                    {showFreezeBadge && (
+                      <TouchableOpacity
+                        style={styles.freezeActionBadge}
+                        onPress={() => moveItem(item.id, 'freezer')}
+                        activeOpacity={0.7}
+                        accessibilityLabel={`Move ${item.name} to freezer`}
+                      >
+                        <Ionicons name="snow-outline" size={14} color={COLORS.freezeText} />
+                        <Text style={styles.freezeActionText}>Freezable — move to freezer</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                );
+              })}
             </View>
           </>
         )}
@@ -291,6 +339,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
     marginBottom: 2,
+  },
+  alertLabelWrap: {
+    flex: 1,
+  },
+  alertActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  freezeActionBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.freezeBg,
+    borderRadius: 4,
+    paddingVertical: 3,
+    paddingHorizontal: 6,
+    alignSelf: 'flex-start',
+    marginLeft: 9,
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  freezeActionText: {
+    color: COLORS.freezeText,
+    fontSize: 11,
+    fontWeight: '500',
   },
   dot: {
     width: 5,

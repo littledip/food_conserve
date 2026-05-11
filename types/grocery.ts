@@ -97,3 +97,17 @@ export interface GroupedPantryItems {
   items: GroceryItem[];
   urgentCount: number; // items expiring within 2 days
 }
+
+export type Disposition = 'used' | 'wasted';
+
+export interface DispositionEvent {
+  id: string;                      // event id (separate from item id)
+  itemId: string;
+  itemName: string;
+  category: ItemCategory;
+  disposition: Disposition;
+  quantity: number;                // amount used or wasted in this event
+  unitOfMeasure: string;
+  date: Date;
+  expiredAtTime: boolean;          // was the item past its effective expiration when disposed?
+}
