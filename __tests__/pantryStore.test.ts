@@ -1,8 +1,10 @@
-import { GroceryItem } from '../types/grocery';
+import { GroceryItem, DispositionEvent } from '../types/grocery';
 import {
   daysUntil,
   filterByDaysUntil,
   fractionalUseAmount,
+  reviveItem,
+  reviveDispositionEvent,
   usePantryStore,
 } from '../stores/pantryStore';
 
@@ -187,12 +189,17 @@ describe('store actions: removeItem', () => {
 });
 
 describe('store actions: disposeItem', () => {
+  // These items use real-time-relative expirations (rather than the fixed NOW
+  // used elsewhere in this file), because disposeItem reads real Date.now()
+  // internally to compute expiredAtTime — so the test needs to stay robust
+  // regardless of when it runs.
   beforeEach(() => {
+    const realDay = (n: number) => new Date(Date.now() + n * 86400000);
     usePantryStore.setState({
       items: [
-        makeItem('future', 5),
-        makeItem('today', 0),
-        makeItem('past', -3),
+        { ...makeItem('future', 0), effectiveExpirationDate: realDay(365) },
+        { ...makeItem('today', 0), effectiveExpirationDate: realDay(0) },
+        { ...makeItem('past', 0), effectiveExpirationDate: realDay(-30) },
       ],
       dispositionLog: [],
     });
@@ -356,6 +363,110 @@ describe('store actions: moveItem (freezer)', () => {
     usePantryStore.getState().moveItem('a', 'freezer');
     const after = usePantryStore.getState().items[0];
     expect(after).toEqual(before);
+  });
+});
+
+describe('reviveItem', () => {
+  it('converts all Date fields back to Date instances after JSON round-trip', () => {
+    const original: GroceryItem = {
+      ...makeItem('rt', 5),
+      printedExpirationDate: offsetDay(5),
+      freezerExpirationDate: offsetDay(90),
+      storageHistory: [
+        { eventType: 'added', location: 'fridge', date: NOW },
+        { eventType: 'moved_to_freezer', location: 'freezer', date: offsetDay(1) },
+      ],
+    };
+    const roundTripped = JSON.parse(JSON.stringify(original));
+    const revived = reviveItem(roundTripped);
+
+    expect(revived.effectiveExpirationDate).toBeInstanceOf(Date);
+    expect(revived.effectiveExpirationDate.getTime()).toBe(original.effectiveExpirationDate.getTime());
+    expect(revived.printedExpirationDate).toBeInstanceOf(Date);
+    expect(revived.freezerExpirationDate).toBeInstanceOf(Date);
+    expect(revived.purchaseDate).toBeInstanceOf(Date);
+    expect(revived.dateAdded).toBeInstanceOf(Date);
+    expect(revived.storageHistory).toHaveLength(2);
+    expect(revived.storageHistory[0].date).toBeInstanceOf(Date);
+    expect(revived.storageHistory[1].date.getTime()).toBe(offsetDay(1).getTime());
+  });
+
+  it('leaves optional Date fields undefined when not present in the input', () => {
+    const original: GroceryItem = makeItem('no-optionals', 5);
+    const roundTripped = JSON.parse(JSON.stringify(original));
+    const revived = reviveItem(roundTripped);
+
+    expect(revived.printedExpirationDate).toBeUndefined();
+    expect(revived.freezerExpirationDate).toBeUndefined();
+    expect(revived.effectiveExpirationDate).toBeInstanceOf(Date);
+  });
+
+  it('preserves non-date primitive fields', () => {
+    const original: GroceryItem = {
+      ...makeItem('strs', 5),
+      name: 'Brown rice',
+      category: 'grains',
+      barcode: '012345678905',
+      remainingQuantity: 1.5,
+      originalQuantity: 2,
+    };
+    const revived = reviveItem(JSON.parse(JSON.stringify(original)));
+
+    expect(revived.name).toBe('Brown rice');
+    expect(revived.category).toBe('grains');
+    expect(revived.barcode).toBe('012345678905');
+    expect(revived.remainingQuantity).toBe(1.5);
+    expect(revived.originalQuantity).toBe(2);
+  });
+});
+
+describe('reviveDispositionEvent', () => {
+  it('converts the date field back to a Date after JSON round-trip', () => {
+    const original: DispositionEvent = {
+      id: 'evt-1',
+      itemId: 'a',
+      itemName: 'Chicken',
+      category: 'protein',
+      disposition: 'wasted',
+      quantity: 1.5,
+      unitOfMeasure: 'lbs',
+      date: NOW,
+      expiredAtTime: true,
+    };
+    const revived = reviveDispositionEvent(JSON.parse(JSON.stringify(original)));
+
+    expect(revived.date).toBeInstanceOf(Date);
+    expect(revived.date.getTime()).toBe(NOW.getTime());
+    expect(revived.disposition).toBe('wasted');
+    expect(revived.quantity).toBe(1.5);
+    expect(revived.expiredAtTime).toBe(true);
+  });
+});
+
+describe('store actions: resetPantry', () => {
+  it('clears items and dispositionLog', () => {
+    usePantryStore.setState({
+      items: [makeItem('a', 5), makeItem('b', 3)],
+      dispositionLog: [
+        {
+          id: 'evt-1', itemId: 'a', itemName: 'a', category: 'other',
+          disposition: 'used', quantity: 1, unitOfMeasure: 'units',
+          date: NOW, expiredAtTime: false,
+        },
+      ],
+    });
+    usePantryStore.getState().resetPantry();
+    const state = usePantryStore.getState();
+    expect(state.items).toEqual([]);
+    expect(state.dispositionLog).toEqual([]);
+  });
+
+  it('is idempotent when called on already-empty state', () => {
+    usePantryStore.setState({ items: [], dispositionLog: [] });
+    usePantryStore.getState().resetPantry();
+    const state = usePantryStore.getState();
+    expect(state.items).toEqual([]);
+    expect(state.dispositionLog).toEqual([]);
   });
 });
 

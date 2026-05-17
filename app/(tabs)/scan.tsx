@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, Camera } from 'expo-camera';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
 import { COLORS } from '../../constants/theme';
 import {
   ExpirationDateType,
@@ -148,6 +149,7 @@ export default function ScanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const addItem = useAddItem();
+  const isFocused = useIsFocused();
 
   const [scanMode, setScanMode] = useState<ScanMode>('barcode');
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -473,8 +475,10 @@ export default function ScanScreen() {
 
   return (
     <View style={styles.root}>
-      {/* Camera area */}
-      {scanMode === 'barcode' && hasPermission === true ? (
+      {/* Camera area — CameraView is mounted only when this tab is focused so the
+          native camera session is acquired fresh on every navigation. Avoids the
+          stale-session bug where returning to the tab leaves the scanner dead. */}
+      {scanMode === 'barcode' && hasPermission === true && isFocused ? (
         <CameraView
           style={[styles.cameraArea, { paddingTop: insets.top }]}
           facing="back"

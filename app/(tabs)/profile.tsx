@@ -1,7 +1,8 @@
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../../constants/theme';
+import { useResetPantry } from '../../stores/pantryStore';
 
 type TimeRange = '3m' | '6m' | '1y';
 
@@ -55,6 +56,18 @@ function SectionLabel({ children }: { children: string }) {
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const [timeRange, setTimeRange] = useState<TimeRange>('6m');
+  const resetPantry = useResetPantry();
+
+  const confirmReset = () => {
+    Alert.alert(
+      'Reset pantry?',
+      'This permanently deletes all items and history. Cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Reset', style: 'destructive', onPress: resetPantry },
+      ],
+    );
+  };
 
   const data = MONTHLY_DATA[timeRange];
   const maxAmount = Math.max(...data.map((d) => d.amount));
@@ -204,6 +217,18 @@ export default function ProfileScreen() {
               </View>
             </TouchableOpacity>
           ))}
+        </View>
+
+        {/* Data */}
+        <SectionLabel>Data</SectionLabel>
+        <View style={styles.settingsGroup}>
+          <TouchableOpacity
+            style={styles.settingsRow}
+            onPress={confirmReset}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.destructiveLabel}>Reset pantry</Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
     </View>
@@ -433,6 +458,11 @@ const styles = StyleSheet.create({
   settingsLabel: {
     fontSize: 11,
     color: COLORS.darkGreen,
+  },
+  destructiveLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: COLORS.redDark,
   },
   settingsRight: {
     flexDirection: 'row',

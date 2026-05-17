@@ -3,6 +3,7 @@ import { View, Text, StyleSheet } from 'react-native';
 import { Stack } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { COLORS } from '../constants/theme';
+import { useHasHydrated } from '../stores/pantryStore';
 
 const SPLASH_DURATION_MS = 3000;
 
@@ -15,12 +16,15 @@ function Splash() {
 }
 
 export default function RootLayout() {
-  const [showSplash, setShowSplash] = useState(true);
+  const [minTimerElapsed, setMinTimerElapsed] = useState(false);
+  const hasHydrated = useHasHydrated();
 
   useEffect(() => {
-    const t = setTimeout(() => setShowSplash(false), SPLASH_DURATION_MS);
+    const t = setTimeout(() => setMinTimerElapsed(true), SPLASH_DURATION_MS);
     return () => clearTimeout(t);
   }, []);
+
+  const showSplash = !minTimerElapsed || !hasHydrated;
 
   return (
     <SafeAreaProvider>
