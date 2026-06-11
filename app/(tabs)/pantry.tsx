@@ -12,13 +12,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../constants/theme';
-import { GroceryItem, ItemCategory, GroupedPantryItems } from '../../types/grocery';
+import { GroceryItem, ItemCategory, GroupedPantryItems, RecallableItem } from '../../types/grocery';
 import {
   useAllItems,
   useUpdateItem,
   useConsumeItem,
   useDisposeItem,
   useMoveItem,
+  useRecallableItems,
+  useRecallItem,
   fractionalUseAmount,
 } from '../../stores/pantryStore';
 
@@ -47,6 +49,13 @@ const formatDays = (d: Date): string => {
   if (n <= 0) return 'Today';
   if (n === 1) return 'Tomorrow';
   return `${n} days`;
+};
+
+const relativeDays = (d: Date): string => {
+  const elapsed = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (elapsed <= 0) return 'today';
+  if (elapsed === 1) return 'yesterday';
+  return `${elapsed} days ago`;
 };
 
 function groupAndFilterItems(items: GroceryItem[], query: string): GroupedPantryItems[] {
@@ -193,6 +202,23 @@ function CategoryGroup({
   );
 }
 
+function RecallRow({ entry, onRecall }: { entry: RecallableItem; onRecall: () => void }) {
+  const { item, disposedAt } = entry;
+  return (
+    <View style={styles.recallRow}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.recallName}>{item.name}</Text>
+        <Text style={styles.recallMeta}>
+          {CATEGORY_LABELS[item.category]} · consumed {relativeDays(disposedAt)} · {item.remainingQuantity} {item.unitOfMeasure}
+        </Text>
+      </View>
+      <TouchableOpacity style={styles.recallButton} onPress={onRecall} activeOpacity={0.7}>
+        <Text style={styles.recallButtonText}>Recall</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 const VALID_CATEGORIES = new Set<ItemCategory>([
   'protein', 'produce', 'dairy', 'grains',
   'condiments', 'beverages', 'frozen', 'snacks', 'other',
@@ -211,12 +237,18 @@ export default function PantryScreen() {
   const [filterVisible, setFilterVisible] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [customAmount, setCustomAmount] = useState('');
+  const [view, setView] = useState<'active' | 'recall'>('active');
 
   const items = useAllItems();
   const updateItem = useUpdateItem();
   const consumeItem = useConsumeItem();
   const disposeItem = useDisposeItem();
   const moveItem = useMoveItem();
+  const recallableItems = useRecallableItems();
+  const recallItem = useRecallItem();
+  const sortedRecallable = [...recallableItems].sort(
+    (a, b) => b.disposedAt.getTime() - a.disposedAt.getTime(),
+  );
   const groups = groupAndFilterItems(items, searchQuery);
   const selectedItem = selectedItemId ? items.find((i) => i.id === selectedItemId) ?? null : null;
 
@@ -292,21 +324,62 @@ export default function PantryScreen() {
         </View>
       </View>
 
-      {/* Category list */}
-      <ScrollView
-        contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {groups.map((group) => (
-          <CategoryGroup
-            key={group.category}
-            group={group}
-            isExpanded={expandedCategory === group.category}
-            onToggle={() => toggleCategory(group.category)}
-            onSelectItem={setSelectedItemId}
-          />
-        ))}
-      </ScrollView>
+      {/* View toggle */}
+      <View style={styles.viewToggleRow}>
+        <TouchableOpacity
+          style={[styles.viewToggleChip, view === 'active' && styles.viewToggleChipActive]}
+          onPress={() => setView('active')}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.viewToggleText, view === 'active' && styles.viewToggleTextActive]}>
+            Active
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.viewToggleChip, view === 'recall' && styles.viewToggleChipActive]}
+          onPress={() => setView('recall')}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.viewToggleText, view === 'recall' && styles.viewToggleTextActive]}>
+            Recently used{sortedRecallable.length > 0 ? ` (${sortedRecallable.length})` : ''}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* List */}
+      {view === 'active' ? (
+        <ScrollView
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {groups.map((group) => (
+            <CategoryGroup
+              key={group.category}
+              group={group}
+              isExpanded={expandedCategory === group.category}
+              onToggle={() => toggleCategory(group.category)}
+              onSelectItem={setSelectedItemId}
+            />
+          ))}
+        </ScrollView>
+      ) : (
+        <ScrollView
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {sortedRecallable.length === 0 ? (
+            <Text style={styles.recallEmpty}>No recently used items.</Text>
+          ) : (
+            sortedRecallable.map((entry) => (
+              <RecallRow
+                key={entry.item.id}
+                entry={entry}
+                onRecall={() => recallItem(entry.item.id)}
+              />
+            ))
+          )}
+        </ScrollView>
+      )}
 
       {/* Filter panel */}
       <Modal
@@ -507,6 +580,72 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingBottom: 10,
     paddingTop: 2,
+  },
+  viewToggleRow: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 6,
+  },
+  viewToggleChip: {
+    paddingVertical: 4,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: 0.5,
+    borderColor: COLORS.borderColor,
+    backgroundColor: COLORS.cardWhite,
+  },
+  viewToggleChipActive: {
+    backgroundColor: COLORS.primaryGreen,
+    borderColor: COLORS.primaryGreen,
+  },
+  viewToggleText: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    fontWeight: '500',
+  },
+  viewToggleTextActive: {
+    color: '#EAF3DE',
+  },
+  recallRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: COLORS.cardWhite,
+    borderWidth: 0.5,
+    borderColor: COLORS.borderColor,
+    borderRadius: 7,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginBottom: 6,
+  },
+  recallName: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: COLORS.darkGreen,
+  },
+  recallMeta: {
+    fontSize: 10,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+  },
+  recallButton: {
+    backgroundColor: COLORS.primaryGreen,
+    borderRadius: 7,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  recallButtonText: {
+    color: '#EAF3DE',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  recallEmpty: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    paddingTop: 24,
   },
   groupContainer: {
     marginBottom: 6,

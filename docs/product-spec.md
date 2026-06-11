@@ -200,6 +200,28 @@ The AI reads up the hierarchy by confidence — item first, fall back to categor
 
 ---
 
+### 4.3 RecallableItem
+
+A snapshot kept so the user can undo a mis-tapped "Used all". Lives alongside `dispositionLog` in the pantry store.
+
+```typescript
+interface RecallableItem {
+  item: GroceryItem;          // full snapshot of state at disposal
+  dispositionEventId: string; // links to the logged DispositionEvent
+  disposedAt: Date;
+}
+```
+
+**Key design decisions:**
+
+- **Why a separate snapshot, not a richer `DispositionEvent`?** The event log is intentionally lightweight (9 fields) — it's the analytics record for waste-rate / savings calculations and should stay small as it grows unbounded. Full state restoration needs all ~23 `GroceryItem` fields (storage location, freezer dates, thaw cycle count, etc.), so it lives in its own slice with a finite window.
+- **Scope: `'used'` only.** Only `disposition === 'used'` disposals are snapshotted. `'wasted'` is treated as permanent — a mis-tap on "Threw it out" is not recoverable. Rationale: `'wasted'` is a comparatively rare, deliberate action; offering recall on it would add UI noise to the recall view.
+- **Window: `RECALL_WINDOW_DAYS = 7`.** Entries auto-prune both on dispose (bounds growth) and on read (the selector filters by window so the cutoff is always accurate relative to "now").
+- **Recall reverses the log.** On `recallItem`, the matching `DispositionEvent` is removed from `dispositionLog` so future waste-rate / savings stats don't double-count the corrected mistake.
+- **Original expiration is preserved.** A recalled item returns with its original `effectiveExpirationDate` intact, even if that date is now in the past — the Pantry screen already renders past-due dates as "Today" / red. No filter on whether the item is "still fresh."
+
+---
+
 ## 5. Screen Specifications
 
 ### 5.1 Home Screen
@@ -251,10 +273,21 @@ The AI reads up the hierarchy by confidence — item first, fall back to categor
 
 **Filter panel** (bottom sheet): Expiring window, Storage location, Category sections. Apply button shows result count.
 
+**Active vs. Recently used:**
+
+A segmented toggle sits directly below the search row with two pills: **Active** (default) and **Recently used** (shows a count when nonzero).
+
+- **Active** renders the category list described above.
+- **Recently used** lists items consumed within the last 7 days (`RECALL_WINDOW_DAYS`), sorted most-recent first. Each row shows the item name, a sub-line (`Category · consumed <today|yesterday|N days ago> · qty unit`), and a **Recall** action button.
+- Tapping **Recall** restores the item to the pantry in its original state (storage location, expiration dates, quantity, history) and reverses the matching disposition event. The user remains on the Recently used view; switching to Active reveals the restored item in its category.
+- Empty state: "No recently used items."
+- Out of scope: recall for `'wasted'` disposals — "Threw it out" remains permanent.
+
 **UX decisions:**
 - Grouped by category because that's how people mentally scan their kitchen ("what do I have for protein tonight?").
 - One category open at a time keeps the list scannable on a real device with 30+ items.
 - The collapsed preview gives just enough information to decide whether to expand without tapping everything.
+- Recall lives as a sibling view, not buried in the item detail sheet — a mis-tapped "Used all" removes the item entirely, so the user has no detail sheet to return to. Surfacing it as a peer toggle makes "undo" findable.
 
 ---
 
@@ -359,3 +392,5 @@ These items were explicitly parked during the design session and should be revis
 | 17 | **Intrinsic shelf-life baselines (freezer + fridge) per item / per category** | The `GroceryItem.freezerExpirationDate` comment says "AI-estimated" but the *how* is unspecified. Today the store uses a flat 90-day placeholder (`defaultFreezerExpiration` in `stores/pantryStore.ts`), which is wildly off for many categories — produce often freezes 6–12 months, herbs ~6, fish 2–3, baked goods 1–3, bread 1–3, dairy generally not freezable, etc. The same baselines feed two paths: (1) setting `freezerExpirationDate` on freeze, (2) computing the recalculated fridge expiration on un-freeze (deferred #16's requirement (a)). Options: hand-curated per-`ItemCategory` table (fastest to ship, low fidelity), per-item lookup table keyed by barcode (high fidelity, requires data sourcing), or a hybrid that falls back from item → category → global default. Data sources: USDA `FoodKeeper` (public, well-documented), FoodSafety.gov tables, or a proprietary curated set. Note: this is *intrinsic* shelf life — distinct from `ConsumptionProfile.freezeFrequency` and `avgFridgeDaysBeforeFreeze`, which describe *household behavior*. Related to #2 (state machine), #3 (profile blending), #16 (un-freeze math). |
 | 18 | **One household ↔ one location, or many?** | The cloud tenancy model treats a household as a single physical unit (one fridge / freezer / pantry triplet via `StorageLocation`). Real-world households often span locations: primary residence + vacation home, parents' house + college dorm, a couple maintaining two apartments. Options: (a) one household per location, forcing the user to manage multiple memberships and switch active household — simplest schema, awkward UX; (b) add a `locations` table under `households`, with `grocery_items` belonging to a `location_id` and storage events scoped within it — clean conceptual model, more schema and UI surface; (c) add an optional `location_label` text field on `grocery_items` for soft tagging — no schema dedication, no aggregate views per location. Affects: cloud data model (deferred decisions in cloud-architecture plan), notification routing (alerts only for items at your current location?), Phase 2 marketplace integrations (different retailers serve different addresses), home/pantry UI (location switcher?). Revisit once MVP usage shows whether multi-location is a real need or a power-user edge case. |
 | 19 | **Event-log snapshot / compaction strategy** | In the cloud architecture (event-sourced via Supabase), every state change is a row in `grocery_events`. A household that uses the app daily for years will accumulate thousands of events, making first-time loads on a fresh device device slow (replay from genesis). Direction is locked in: every N events per household (~10K is a reasonable starting point) the server materializes a snapshot of the projection (items + dispositionLog state at that `seq`). Fresh installs load `(latest snapshot + events since snapshot)` instead of the full log. Open questions for when this gets built: snapshot cadence (event-count vs. time-based), snapshot storage (separate table vs. JSONB blob in storage bucket), garbage collection of pre-snapshot events (keep forever for audit, or compact / archive to cold storage). Affects: cloud-architecture plan §4 (read path), Supabase storage quotas, eventual cost at scale. Out of scope for MVP; revisit once any household has >1K events or first-load times exceed ~2s. |
+| 20 | **Bulk-clear / "forget all recallable" UX** | Today, `RecallableItem` entries auto-expire 7 days after disposal; there's no manual way to clear the Recently-used list early. For privacy-conscious users (e.g., consumed items they don't want lingering on a shared device) or users who simply want a clean slate, a "Clear recently used" action would help. Options: (a) a small "Clear" link in the Recently used view header, with a confirm step; (b) per-row swipe-to-dismiss; (c) defer entirely and rely on the 7-day window. Pairs with #18 (multi-location) — if households span locations, clearing might need to be scoped. Revisit once we see real usage of the recall view. |
+| 21 | **Dismiss-on-error affordance for Scan screen** | The barcode result card has both a ✕ close icon and a footer "Clear" button to dismiss an inadvertent scan. The error state (network failure, item-not-found) currently has only a "Try again" button — no dedicated dismiss control. Today the user can switch modes (Barcode/Photo/Manual) to clear an error, which works but isn't obvious. Options: (a) add a small ✕ to the error block matching the result card's pattern; (b) add a "Cancel" secondary button alongside "Try again"; (c) leave as-is — the error is short-lived and the camera is still visible above the sheet. Defer until we see whether users get stuck on the error state. |

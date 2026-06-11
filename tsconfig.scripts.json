@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "esModuleInterop": true,
+    "noEmit": false,
+    "isolatedModules": false
+  },
+  "ts-node": {
+    "transpileOnly": true
+  },
+  "include": ["scripts/**/*.ts", "services/**/*.ts", "types/**/*.ts"]
+}

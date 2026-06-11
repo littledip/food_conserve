@@ -31,7 +31,13 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
+
+# local-only receipt test images (real receipts — kept out of the repo for
+# privacy + size; the test corpus for scripts/test-vision.ts lives here locally)
+/assets/dev/
+/__tests__/fixtures/receipts/
 
 # typescript
 *.tsbuildinfo

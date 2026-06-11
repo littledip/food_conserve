@@ -111,3 +111,32 @@ export interface DispositionEvent {
   date: Date;
   expiredAtTime: boolean;          // was the item past its effective expiration when disposed?
 }
+
+// Snapshot of a fully-disposed item, kept so the user can undo a mistaken
+// "Used all". DispositionEvent is intentionally lightweight for analytics;
+// full state restoration needs the whole GroceryItem.
+export interface RecallableItem {
+  item: GroceryItem;
+  dispositionEventId: string;
+  disposedAt: Date;
+}
+
+// The shape Claude vision returns for a parsed receipt. Lives outside
+// GroceryItem because it's the wire format from the LLM; the review-list UI
+// translates each ParsedReceiptItem into a GroceryItem on user confirm.
+export interface ParsedReceiptItem {
+  name: string;                    // human-readable, abbreviations expanded
+  category: ItemCategory;
+  quantity: number;
+  unitOfMeasure: string;           // 'units' default; 'lbs'/'oz' for weight-priced
+  unitCost: number | null;         // null when discount/BOGO/unclear
+  totalCost: number | null;
+  shelfLifeDays: number;           // LLM's estimate, lean-low (see prompt rules)
+  confidence: 'high' | 'low';      // 'low' when the line had pricing ambiguity
+}
+
+export interface ParsedReceipt {
+  store: string | null;
+  purchaseDate: string | null;     // 'YYYY-MM-DD'
+  items: ParsedReceiptItem[];
+}

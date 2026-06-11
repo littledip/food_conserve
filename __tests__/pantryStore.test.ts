@@ -1,8 +1,10 @@
-import { GroceryItem, DispositionEvent } from '../types/grocery';
+import { GroceryItem, DispositionEvent, RecallableItem } from '../types/grocery';
 import {
   daysUntil,
   filterByDaysUntil,
   fractionalUseAmount,
+  isRecallable,
+  RECALL_WINDOW_DAYS,
   reviveItem,
   reviveDispositionEvent,
   usePantryStore,
@@ -492,5 +494,104 @@ describe('store actions: consumeItem logs Used events', () => {
   it('does not log when called with an unknown id', () => {
     usePantryStore.getState().consumeItem('nonexistent', 0.5);
     expect(usePantryStore.getState().dispositionLog).toEqual([]);
+  });
+});
+
+describe('isRecallable', () => {
+  it('returns true within the window (6 days ago)', () => {
+    const now = new Date('2026-05-29T12:00:00Z');
+    const disposed = new Date(now.getTime() - 6 * 86400000);
+    expect(isRecallable(disposed, now)).toBe(true);
+  });
+
+  it('returns false past the window (8 days ago)', () => {
+    const now = new Date('2026-05-29T12:00:00Z');
+    const disposed = new Date(now.getTime() - 8 * 86400000);
+    expect(isRecallable(disposed, now)).toBe(false);
+  });
+
+  it('returns true at exactly the window boundary', () => {
+    const now = new Date('2026-05-29T12:00:00Z');
+    const disposed = new Date(now.getTime() - RECALL_WINDOW_DAYS * 86400000);
+    expect(isRecallable(disposed, now)).toBe(true);
+  });
+});
+
+describe('store actions: recallItem and disposeItem snapshotting', () => {
+  beforeEach(() => {
+    usePantryStore.getState().resetPantry();
+    const realDay = (n: number) => new Date(Date.now() + n * 86400000);
+    usePantryStore.setState({
+      items: [
+        { ...makeItem('milk', 0), effectiveExpirationDate: realDay(5) },
+        { ...makeItem('bread', 0), effectiveExpirationDate: realDay(-2) }, // already expired
+      ],
+    });
+  });
+
+  it("disposeItem('used') adds a RecallableItem snapshot linked to the logged event", () => {
+    usePantryStore.getState().disposeItem('milk', 'used');
+    const state = usePantryStore.getState();
+    expect(state.recallableItems).toHaveLength(1);
+    const entry = state.recallableItems[0];
+    expect(entry.item.id).toBe('milk');
+    expect(entry.item.name).toBe('milk');
+    expect(entry.item.remainingQuantity).toBe(1);
+    expect(state.dispositionLog).toHaveLength(1);
+    expect(entry.dispositionEventId).toBe(state.dispositionLog[0].id);
+    expect(entry.disposedAt).toBeInstanceOf(Date);
+  });
+
+  it("disposeItem('wasted') does NOT add a recallable entry", () => {
+    usePantryStore.getState().disposeItem('milk', 'wasted');
+    const state = usePantryStore.getState();
+    expect(state.recallableItems).toEqual([]);
+    expect(state.dispositionLog).toHaveLength(1);
+  });
+
+  it('recallItem restores the item and reverses the disposition event', () => {
+    usePantryStore.getState().disposeItem('milk', 'used');
+    const original = usePantryStore.getState().recallableItems[0].item;
+
+    usePantryStore.getState().recallItem('milk');
+    const state = usePantryStore.getState();
+
+    expect(state.items.map((i) => i.id)).toContain('milk');
+    expect(state.recallableItems).toEqual([]);
+    expect(state.dispositionLog).toEqual([]); // matching event removed
+    const restored = state.items.find((i) => i.id === 'milk');
+    expect(restored?.effectiveExpirationDate.getTime()).toBe(original.effectiveExpirationDate.getTime());
+  });
+
+  it('recallItem preserves an original past-dated expiration as-is', () => {
+    usePantryStore.getState().disposeItem('bread', 'used');
+    const originalExp = usePantryStore.getState().recallableItems[0].item.effectiveExpirationDate;
+    usePantryStore.getState().recallItem('bread');
+    const restored = usePantryStore.getState().items.find((i) => i.id === 'bread');
+    expect(restored?.effectiveExpirationDate.getTime()).toBe(originalExp.getTime());
+    // Sanity: this expiration is in the past
+    expect(restored!.effectiveExpirationDate.getTime()).toBeLessThan(Date.now());
+  });
+
+  it('recallItem is a no-op for an unknown id', () => {
+    const before = usePantryStore.getState();
+    usePantryStore.getState().recallItem('nonexistent');
+    const after = usePantryStore.getState();
+    expect(after.items).toEqual(before.items);
+    expect(after.recallableItems).toEqual(before.recallableItems);
+    expect(after.dispositionLog).toEqual(before.dispositionLog);
+  });
+
+  it('disposeItem prunes recallable entries older than the window', () => {
+    const stale: RecallableItem = {
+      item: { ...makeItem('old-yogurt', 0) },
+      dispositionEventId: 'evt-stale',
+      disposedAt: new Date(Date.now() - 100 * 86400000), // way past 7d window
+    };
+    usePantryStore.setState({ recallableItems: [stale] });
+
+    usePantryStore.getState().disposeItem('milk', 'used');
+    const recallable = usePantryStore.getState().recallableItems;
+    expect(recallable.map((r) => r.item.id)).toEqual(['milk']); // stale dropped
   });
 });
