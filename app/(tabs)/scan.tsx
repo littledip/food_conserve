@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useState, useEffect, useReducer, useRef } from 'react';
 import { parseReceiptFromUri } from '../../services/receiptVisionApp';
+import { parsePurchaseDate, plannedUnitCount } from '../../services/receiptReview';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, Camera } from 'expo-camera';
@@ -53,9 +54,9 @@ async function resizeForVision(uri: string, width: number, height: number): Prom
   return result.uri;
 }
 
-// Receipt-scan state machine (sibling to the barcode ScanFlow). 1.3 lands
-// idle → captured → parsing → review/error; the review-list UI is 1.4 and
-// bulk-add is 1.5, so for now `review` just shows a parsed summary.
+// Receipt-scan state machine (sibling to the barcode ScanFlow):
+// idle → captured → parsing → review/error. The review state drives the
+// editable list; its footer bulk-adds the haul to the pantry.
 type ReceiptFlow =
   | { status: 'idle' }
   | { status: 'captured'; uri: string }
@@ -309,6 +310,9 @@ function buildItem(args: {
   unit: string;
   store: string;
   inputMethod: GroceryItem['inputMethod'];
+  unitCost?: number;
+  totalCost?: number;
+  purchaseDate?: Date;
 }): GroceryItem {
   const now = new Date();
   return {
@@ -326,11 +330,49 @@ function buildItem(args: {
     unitOfMeasure: args.unit,
     originalQuantity: args.quantity,
     remainingQuantity: args.quantity,
-    purchaseDate: now,
+    purchaseDate: args.purchaseDate ?? now,
     dateAdded: now,
     store: args.store || undefined,
+    unitCost: args.unitCost,
+    totalCost: args.totalCost,
     inputMethod: args.inputMethod,
   };
+}
+
+// Translate one review row into the GroceryItem(s) it becomes on bulk-add.
+// Split rule: an integer quantity > 1 on a per-unit item fans out into that many
+// independent single-unit items (each carrying the per-unit cost), so partial
+// consumption is tracked per unit. Weight-priced rows stay one fractional item.
+function reviewItemToGroceryItems(
+  it: ReviewItem,
+  store: string,
+  purchaseDate: Date | undefined,
+): GroceryItem[] {
+  const base = {
+    name: it.name,
+    category: it.category,
+    expirationDate: it.expirationDate,
+    expirationType: 'estimated' as ExpirationDateType,
+    storageLocation: it.storageLocation,
+    unit: it.unitOfMeasure,
+    store,
+    inputMethod: 'receipt' as const,
+    purchaseDate,
+  };
+  if (plannedUnitCount(it.unitOfMeasure, it.quantity) > 1) {
+    const perUnit = it.unitCost ?? undefined;
+    return Array.from({ length: it.quantity }, () =>
+      buildItem({ ...base, quantity: 1, unitCost: perUnit, totalCost: perUnit }),
+    );
+  }
+  return [
+    buildItem({
+      ...base,
+      quantity: it.quantity,
+      unitCost: it.unitCost ?? undefined,
+      totalCost: it.totalCost ?? undefined,
+    }),
+  ];
 }
 
 const sanitize = (v: unknown): string | undefined => {
@@ -518,6 +560,33 @@ export default function ScanScreen() {
     setEditingReviewId(null);
   }
 
+  // Bulk-add the whole reviewed haul to the pantry, applying the split rule, then
+  // reset the receipt flow and jump to the pantry to show the result.
+  function handleBulkAdd() {
+    if (reviewItems.length === 0) return;
+    const purchaseDate = parsePurchaseDate(reviewPurchaseDate);
+    const storeName = reviewStore.trim();
+    for (const it of reviewItems) {
+      for (const groceryItem of reviewItemToGroceryItems(it, storeName, purchaseDate)) {
+        addItem(groceryItem);
+      }
+    }
+    receiptDispatch({ type: 'reset' });
+    setReviewItems([]);
+    setReviewStore('');
+    setReviewPurchaseDate(null);
+    setEditingReviewId(null);
+    router.push('/(tabs)/pantry');
+  }
+
+  function discardReview() {
+    receiptDispatch({ type: 'reset' });
+    setReviewItems([]);
+    setReviewStore('');
+    setReviewPurchaseDate(null);
+    setEditingReviewId(null);
+  }
+
   async function handleCapture() {
     if (!cameraRef.current) return;
     try {
@@ -682,8 +751,8 @@ export default function ScanScreen() {
         </View>
       );
     } else {
-      // review — editable list. Bulk-add to the pantry lands in 1.5; here the
-      // rows are fully editable and edits persist in local state.
+      // review — editable list; the action footer bulk-adds these rows to the
+      // pantry (Discard | Add N items).
       const itemCount = reviewItems.length;
       sheetBody = (
         <>
@@ -713,17 +782,9 @@ export default function ScanScreen() {
 
           {itemCount === 0 && (
             <Text style={[styles.promptText, { marginTop: 24 }]}>
-              No items left. Start over to scan another receipt.
+              No items left. Discard to scan another receipt.
             </Text>
           )}
-
-          <TouchableOpacity
-            style={[styles.btnSecondary, { marginTop: 16, alignSelf: 'center', paddingHorizontal: 24 }]}
-            onPress={() => receiptDispatch({ type: 'reset' })}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.btnSecondaryText}>Start over</Text>
-          </TouchableOpacity>
         </>
       );
     }
@@ -890,7 +951,23 @@ export default function ScanScreen() {
 
   // Action footer
   let actionFooter: React.ReactNode = null;
-  if (scanMode === 'manual') {
+  if (scanMode === 'receipt' && receiptFlow.status === 'review') {
+    const addCount = reviewItems.reduce((sum, it) => sum + plannedUnitCount(it.unitOfMeasure, it.quantity), 0);
+    actionFooter = (
+      <View style={styles.actionFooter}>
+        <TouchableOpacity style={styles.btnSecondary} onPress={discardReview} activeOpacity={0.7}>
+          <Text style={styles.btnSecondaryText}>Discard</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.btnPrimary, addCount === 0 && styles.btnPrimaryDisabled]}
+          activeOpacity={0.7}
+          onPress={handleBulkAdd}
+        >
+          <Text style={styles.btnPrimaryText}>Add {addCount} item{addCount === 1 ? '' : 's'}</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  } else if (scanMode === 'manual') {
     actionFooter = (
       <View style={styles.actionFooter}>
         <TouchableOpacity style={styles.btnSecondary} onPress={handleCancel} activeOpacity={0.7}>
