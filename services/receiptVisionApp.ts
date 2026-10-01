@@ -1,4 +1,3 @@
-import Constants from 'expo-constants';
 // expo/fetch (unlike the global RN fetch) exposes a streaming response body, so
 // we can surface progress during the ~45s parse instead of blocking on a spinner.
 import { fetch } from 'expo/fetch';
@@ -14,6 +13,8 @@ import {
   type ParseReceiptOptions,
   type ReceiptImageMediaType,
 } from './receiptVision';
+import { readSseEvents } from './sseStream';
+import { getAnthropicApiKey } from './anthropicApiKey';
 
 // React Native bridge for the receipt parser. We call the Anthropic REST API
 // directly with fetch rather than @anthropic-ai/sdk, because the SDK imports
@@ -37,13 +38,11 @@ function inferMediaTypeFromUri(uri: string): ReceiptImageMediaType {
 }
 
 function getApiKey(): string {
-  const key = Constants.expoConfig?.extra?.anthropicApiKey;
-  if (typeof key !== 'string' || !key) {
-    throw new ReceiptParseError(
-      'ANTHROPIC_API_KEY is not configured. Add it to .env (see .env.example) and restart the dev server.',
-    );
+  try {
+    return getAnthropicApiKey();
+  } catch (e) {
+    throw new ReceiptParseError((e as Error).message, e);
   }
-  return key;
 }
 
 /**
@@ -58,46 +57,20 @@ async function readToolInputFromSse(
   body: ReadableStream<Uint8Array>,
   onTextDelta?: (delta: string) => void,
 ): Promise<string> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
   let toolJson = '';
 
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+  await readSseEvents(body, (raw) => {
+    const evt = raw as { type?: string; delta?: { type?: string; partial_json?: string }; error?: { message?: string } };
 
-      let nlIndex: number;
-      while ((nlIndex = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, nlIndex).trimEnd();
-        buffer = buffer.slice(nlIndex + 1);
-        // SSE frames are `event:`/`data:` line pairs; only the data carries JSON.
-        if (!line.startsWith('data:')) continue;
-        const data = line.slice(5).trim();
-        if (!data) continue;
-
-        let evt: { type?: string; delta?: { type?: string; partial_json?: string }; error?: { message?: string } };
-        try {
-          evt = JSON.parse(data);
-        } catch {
-          continue;
-        }
-
-        if (evt.type === 'error') {
-          throw new ReceiptParseError(`Vision API streaming error: ${evt.error?.message ?? 'unknown'}`);
-        }
-        if (evt.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta') {
-          const partial = evt.delta.partial_json ?? '';
-          toolJson += partial;
-          if (partial && onTextDelta) onTextDelta(partial);
-        }
-      }
+    if (evt.type === 'error') {
+      throw new ReceiptParseError(`Vision API streaming error: ${evt.error?.message ?? 'unknown'}`);
     }
-  } finally {
-    reader.releaseLock();
-  }
+    if (evt.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta') {
+      const partial = evt.delta.partial_json ?? '';
+      toolJson += partial;
+      if (partial && onTextDelta) onTextDelta(partial);
+    }
+  });
 
   return toolJson;
 }

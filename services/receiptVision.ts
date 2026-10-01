@@ -58,6 +58,21 @@ const RECEIPT_TOOL = {
   },
 };
 
+// Shared shelf-life rubric — also reused by the conversational assistant
+// (pantryChat.ts) so an "add_items" estimate follows the same guidance as a
+// receipt-parsed one. Each entry is a range; pick a single integer in the
+// range. Prefer the LOWER bound when storage or condition is ambiguous;
+// reserve the upper bound for clearly sealed, unopened, or ideally-stored items.
+export const SHELF_LIFE_GUIDANCE = `(typical, days after purchase)
+   - Fresh fish/seafood: 2-3
+   - Leafy greens / berries: 5-7
+   - Other fresh produce: 5-10
+   - Fresh milk, deli meat: 7-10
+   - Eggs, hard cheese, yogurt: 21-30
+   - Frozen foods: 180-365
+   - Dry pantry (rice, pasta, flour): 365-730
+   - Canned goods: 730-1095`;
+
 export const RECEIPT_SYSTEM_PROMPT = `You are a grocery receipt parser. Extract food items from the receipt image and call the submit_parsed_receipt tool with the structured payload. The tool's schema defines the exact shape; the rules below define how to populate it.
 
 Rules:
@@ -76,15 +91,7 @@ Rules:
 5. MULTI-QUANTITY: many receipts (Whole Foods especially) show a sub-line beneath the item like "Qty 2 @ $5.99 ea  $11.98" or "2 @ 1.99  3.98". When present, set quantity to that N (not 1), unitOfMeasure to "each" (or "lbs"/"oz" if weight-based), unitCost to the per-unit price, and totalCost to the line total. Do NOT default to quantity=1 when a Qty indicator is visible.
 6. RECONCILE: after extracting each item, verify that quantity × unitCost ≈ totalCost (within $0.02 for rounding). If they don't reconcile, you've almost certainly misread the quantity or one of the prices — re-examine the line and fix. Common mistake: missing a "Qty N" sub-line and reporting quantity=1 with mismatched totalCost. Get this right; the user audits totals.
 7. Expand abbreviations: "ORG BAN" -> "Organic Bananas", "GR BF 80/20" -> "Ground Beef 80/20".
-8. Shelf life estimates (typical, days after purchase). Each entry is a range — pick a single integer in the range. Prefer the LOWER bound when storage or condition is ambiguous; reserve the upper bound for clearly sealed, unopened, or ideally-stored items.
-   - Fresh fish/seafood: 2-3
-   - Leafy greens / berries: 5-7
-   - Other fresh produce: 5-10
-   - Fresh milk, deli meat: 7-10
-   - Eggs, hard cheese, yogurt: 21-30
-   - Frozen foods: 180-365
-   - Dry pantry (rice, pasta, flour): 365-730
-   - Canned goods: 730-1095
+8. Shelf life estimates: ${SHELF_LIFE_GUIDANCE}
 9. If a line had a discount/BOGO that you netted into totalCost, mark confidence "low".`;
 
 export interface ParseReceiptOptions {
