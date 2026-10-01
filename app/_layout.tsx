@@ -4,6 +4,7 @@ import { Stack } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { COLORS } from '../constants/theme';
 import { useHasHydrated } from '../stores/pantryStore';
+import { PantryChatFab } from '../components/PantryChat';
 
 const SPLASH_DURATION_MS = 3000;
 
@@ -28,7 +29,14 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      {showSplash ? <Splash /> : <Stack screenOptions={{ headerShown: false }} />}
+      {showSplash ? (
+        <Splash />
+      ) : (
+        <>
+          <Stack screenOptions={{ headerShown: false }} />
+          <PantryChatFab />
+        </>
+      )}
     </SafeAreaProvider>
   );
 }

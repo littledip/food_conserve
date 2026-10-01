@@ -13,6 +13,7 @@ import {
 import { useState, useEffect, useReducer, useRef } from 'react';
 import { parseReceiptFromUri } from '../../services/receiptVisionApp';
 import { parsePurchaseDate, plannedUnitCount } from '../../services/receiptReview';
+import { buildItem, storageForCategory } from '../../services/pantryActions';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, Camera } from 'expo-camera';
@@ -105,21 +106,6 @@ type ReviewItem = {
   unitCost: number | null;
   totalCost: number | null;
 };
-
-// Default storage by category (user overrides per row). Mirrors the spec:
-// produce/protein/dairy → fridge, frozen → freezer, everything else → pantry.
-function storageForCategory(category: ItemCategory): StorageLocation {
-  switch (category) {
-    case 'produce':
-    case 'protein':
-    case 'dairy':
-      return 'fridge';
-    case 'frozen':
-      return 'freezer';
-    default:
-      return 'pantry';
-  }
-}
 
 // Turn a parsed receipt into editable review rows, applying the per-item
 // defaults: derived storage location and expiration = today + shelfLifeDays
@@ -297,46 +283,6 @@ function ReviewRow({
       </View>
     </View>
   );
-}
-
-function buildItem(args: {
-  name: string;
-  category: ItemCategory;
-  barcode?: string;
-  expirationDate: Date;
-  expirationType: ExpirationDateType;
-  storageLocation: StorageLocation;
-  quantity: number;
-  unit: string;
-  store: string;
-  inputMethod: GroceryItem['inputMethod'];
-  unitCost?: number;
-  totalCost?: number;
-  purchaseDate?: Date;
-}): GroceryItem {
-  const now = new Date();
-  return {
-    id: `${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
-    name: args.name,
-    category: args.category,
-    barcode: args.barcode,
-    storageLocation: args.storageLocation,
-    storageHistory: [{ eventType: 'added', location: args.storageLocation, date: now }],
-    printedExpirationDate: args.expirationDate,
-    effectiveExpirationDate: args.expirationDate,
-    expirationDateType: args.expirationType,
-    isFreezable: false,
-    thawCycleCount: 0,
-    unitOfMeasure: args.unit,
-    originalQuantity: args.quantity,
-    remainingQuantity: args.quantity,
-    purchaseDate: args.purchaseDate ?? now,
-    dateAdded: now,
-    store: args.store || undefined,
-    unitCost: args.unitCost,
-    totalCost: args.totalCost,
-    inputMethod: args.inputMethod,
-  };
 }
 
 // Translate one review row into the GroceryItem(s) it becomes on bulk-add.
