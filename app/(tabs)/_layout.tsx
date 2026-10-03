@@ -1,11 +1,15 @@
 import { Tabs } from 'expo-router';
+import type { ColorValue } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../constants/theme';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
 function tabIcon(focused: boolean, active: IoniconName, inactive: IoniconName) {
-  return ({ color, size }: { color: string; size: number }) => (
+  // tabBarIcon's `color` is typed as ColorValue (not just string) as of the
+  // SDK 57 / react-navigation types — Ionicons already accepts ColorValue,
+  // so widen here rather than narrowing what we pass to it.
+  return ({ color, size }: { color: ColorValue; size: number }) => (
     <Ionicons name={focused ? active : inactive} size={size} color={color} />
   );
 }

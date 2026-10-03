@@ -18,8 +18,7 @@ import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, Camera } from 'expo-camera';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { useRouter } from 'expo-router';
-import { useIsFocused } from '@react-navigation/native';
+import { useRouter, useIsFocused } from 'expo-router';
 import { COLORS } from '../../constants/theme';
 import {
   ExpirationDateType,
