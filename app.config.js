@@ -43,6 +43,17 @@ module.exports = {
       // Constants.expoConfig.extra.anthropicApiKey. null when unset so the
       // feature can degrade gracefully (we'd show a "configure API key" hint).
       anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? null,
+      // Prototype toggle for the pantry chat backend — 'anthropic' (default)
+      // or 'ollama', so Claude vs. a local model can be A/B tested on the
+      // same build without a code change. See services/pantryChatBackend.ts.
+      pantryChatBackend: process.env.PANTRY_CHAT_BACKEND ?? 'anthropic',
+      // Base URL of an Ollama instance reachable from the phone (NOT
+      // localhost — that resolves to the phone itself). A LAN hostname like
+      // http://your-mac.local:11434 or a raw IP both work.
+      ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? null,
+      // Ollama model tag to use, e.g. "llama3.1:8b" — must be tagged with
+      // "tools" capability (`ollama show <model>`) or tool calls won't work.
+      ollamaModel: process.env.OLLAMA_MODEL ?? null,
     },
   },
 };

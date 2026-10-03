@@ -22,6 +22,13 @@ export class PantryChatError extends Error {
   }
 }
 
+// Shared by both transports (a canceled fetch/stream) and the executor (a
+// signal already aborted between loop iterations) so the UI has one check to
+// render a cancellation as a neutral note instead of an error bubble.
+export function isAbortError(e: unknown): boolean {
+  return e instanceof Error && e.name === 'AbortError';
+}
+
 // --- Content block / message types (shared with the transport + executor) ---
 
 export type TextBlock = { type: 'text'; text: string };
@@ -43,6 +50,10 @@ export type PantryChatMessage =
 export interface PantryChatRequestBody {
   model: string;
   max_tokens: number;
+  // Lower than the API default (1.0) — this assistant drives real pantry
+  // mutations, so predictable tool-use/grounding matters more than
+  // conversational variety.
+  temperature: number;
   system: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }>;
   tools: object[];
   tool_choice: { type: 'auto' };
@@ -110,6 +121,10 @@ export const PANTRY_CHAT_SYSTEM_PROMPT = `You are a conversational assistant for
 
 Your job: interpret what the user wants, then either respond in plain text (answering a question, asking for clarification) or call one or more of the provided tools to change pantry state. Never guess silently — if you're not confident, ask.
 
+GROUNDING (critical): Never claim in your reply that you added, updated, removed, moved, or otherwise changed something unless you actually called the matching tool in THIS response and are reporting its real result. If you did not call a tool, do not describe an action as having happened — describe what you're asking or proposing instead. Do not speculate about the outcome of a past confirm/cancel chip beyond what CURRENT_PANTRY actually shows right now.
+
+RESTATING vs. ADDING: if the user states a quantity for an item that already exists in CURRENT_PANTRY at or near that same quantity (e.g. "I have 3 kiwis" when 3 kiwis are already listed), don't assume they want to add more — this is often just them telling you what's already there. Ask whether they mean "add more" or are just confirming current stock, rather than calling add_items on a guess.
+
 ITEM REFERENCE RULES (critical):
 - Every mutating tool takes an itemId. You may ONLY use an id that appears verbatim in the CURRENT_PANTRY snapshot for THIS turn — never invent one, and never reuse an id from an earlier turn without checking it's still present.
 - If the user's phrase (e.g. "the milk", "the chicken") matches more than one item in CURRENT_PANTRY, or matches none, do NOT call a tool. Respond in plain text instead: list the plausible candidates by name, remaining quantity, storage location, and days until expiration, and ask which one they mean.
@@ -123,10 +138,13 @@ CORRECTING A MISTAKE:
 - If the user wants to fix something about an item that's already in the pantry (wrong expiration estimate, wrong category, misspelled name, wrong storage location), call update_item on that item's id. NEVER call add_items to "fix" an existing item — that creates a duplicate instead of correcting it.
 
 ADDING ITEMS (add_items):
-- category must be one of: produce, protein, dairy, grains, condiments, beverages, frozen, snacks, other.
-- Estimate estimatedShelfLifeDays using this rubric unless the user gives you a firmer date ${SHELF_LIFE_GUIDANCE}
+- The item's name is the ONLY thing you actually need. Do not interrogate the user for category, quantity, unit, cost, or storage location before calling the tool — guess a sensible value for anything they didn't say and mention your assumption in your reply (e.g. "Added 1 jar of peanut butter to the pantry shelf — let me know if that's wrong"). They can correct any of it afterward with a simple follow-up, which calls update_item.
+- If no quantity was stated, use 1. If no unit was stated, use "each".
+- category must be one of: produce, protein, dairy, grains, condiments, beverages, frozen, snacks, other — pick your best guess from the item name; use "other" only if nothing fits.
+- Estimate estimatedShelfLifeDays yourself using this rubric unless the user gives you a firmer date — don't ask them for a shelf-life estimate, that's your job: ${SHELF_LIFE_GUIDANCE}
 - Only set explicitExpirationDate (YYYY-MM-DD) when the user states or implies a specific date (e.g. "expires next Tuesday", "best by the 14th"); otherwise leave it null and rely on estimatedShelfLifeDays. Use CURRENT_PANTRY's nowIso as "today" for resolving relative dates.
 - Only set storageLocation when the user states it explicitly; otherwise leave it null and the app will pick a sensible default by category.
+- Only set unitCost/totalCost when the user actually mentions a price — never ask for cost, it's rarely worth the friction.
 
 ANSWERING QUESTIONS:
 - Answer questions about the pantry (what's expiring soon, how much of something is left, what's in the freezer, etc.) directly from CURRENT_PANTRY — there is no separate lookup tool. Don't call a tool just to answer a question.
@@ -170,10 +188,11 @@ const ADD_ITEMS_TOOL = {
             unitCost: { type: ['number', 'null'] },
             totalCost: { type: ['number', 'null'] },
           },
-          required: [
-            'name', 'category', 'quantity', 'unitOfMeasure', 'storageLocation',
-            'estimatedShelfLifeDays', 'explicitExpirationDate', 'unitCost', 'totalCost',
-          ],
+          // Only `name` is truly required — everything else gets a sensible
+          // default in code when omitted (see validateAddItemsInput), so a
+          // weaker model isn't tempted to interrogate the user for details
+          // it can reasonably guess (and correct later via update_item).
+          required: ['name'],
         },
       },
     },
@@ -295,6 +314,7 @@ export function buildPantryChatRequestBody(
   return {
     model: PANTRY_CHAT_MODEL,
     max_tokens: 4096,
+    temperature: 0.3,
     system: [
       { type: 'text', text: PANTRY_CHAT_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
       { type: 'text', text: `CURRENT_PANTRY:\n${JSON.stringify(snapshot)}` },
@@ -317,14 +337,40 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
+// Applied when add_items omits a non-essential field — name is the only
+// thing a caller (model or otherwise) actually has to provide; see the
+// ADDING ITEMS prompt section for why the model is told not to ask for these.
+const DEFAULT_ADD_ITEM_CATEGORY: ItemCategory = 'other';
+const DEFAULT_ADD_ITEM_QUANTITY = 1;
+const DEFAULT_ADD_ITEM_UNIT = 'each';
+const DEFAULT_ADD_ITEM_SHELF_LIFE_DAYS = 14;
+
+// Omitted/null fields fall back to the defaults above; a field that *is*
+// provided but malformed (wrong type, invalid enum, non-positive number)
+// still fails the whole item — absence is tolerated, garbage is not.
 function validateChatAddItem(x: unknown): ChatAddItem | null {
   if (typeof x !== 'object' || x === null) return null;
   const r = x as Record<string, unknown>;
 
   if (!isNonEmptyString(r.name)) return null;
-  if (typeof r.category !== 'string' || !VALID_CATEGORIES.has(r.category as ItemCategory)) return null;
-  if (!isFiniteNumber(r.quantity) || r.quantity <= 0) return null;
-  if (!isNonEmptyString(r.unitOfMeasure)) return null;
+
+  let category: ItemCategory = DEFAULT_ADD_ITEM_CATEGORY;
+  if (r.category !== null && r.category !== undefined) {
+    if (typeof r.category !== 'string' || !VALID_CATEGORIES.has(r.category as ItemCategory)) return null;
+    category = r.category as ItemCategory;
+  }
+
+  let quantity = DEFAULT_ADD_ITEM_QUANTITY;
+  if (r.quantity !== null && r.quantity !== undefined) {
+    if (!isFiniteNumber(r.quantity) || r.quantity <= 0) return null;
+    quantity = r.quantity;
+  }
+
+  let unitOfMeasure = DEFAULT_ADD_ITEM_UNIT;
+  if (r.unitOfMeasure !== null && r.unitOfMeasure !== undefined) {
+    if (!isNonEmptyString(r.unitOfMeasure)) return null;
+    unitOfMeasure = r.unitOfMeasure.trim();
+  }
 
   let storageLocation: StorageLocation | undefined;
   if (r.storageLocation !== null && r.storageLocation !== undefined) {
@@ -334,7 +380,11 @@ function validateChatAddItem(x: unknown): ChatAddItem | null {
     storageLocation = r.storageLocation as StorageLocation;
   }
 
-  if (!isFiniteNumber(r.estimatedShelfLifeDays) || r.estimatedShelfLifeDays <= 0) return null;
+  let estimatedShelfLifeDays = DEFAULT_ADD_ITEM_SHELF_LIFE_DAYS;
+  if (r.estimatedShelfLifeDays !== null && r.estimatedShelfLifeDays !== undefined) {
+    if (!isFiniteNumber(r.estimatedShelfLifeDays) || r.estimatedShelfLifeDays <= 0) return null;
+    estimatedShelfLifeDays = Math.round(r.estimatedShelfLifeDays);
+  }
 
   let explicitExpirationDate: string | null = null;
   if (r.explicitExpirationDate !== null && r.explicitExpirationDate !== undefined) {
@@ -347,11 +397,11 @@ function validateChatAddItem(x: unknown): ChatAddItem | null {
 
   return {
     name: r.name.trim(),
-    category: r.category as ItemCategory,
-    quantity: r.quantity,
-    unitOfMeasure: r.unitOfMeasure.trim(),
+    category,
+    quantity,
+    unitOfMeasure,
     storageLocation,
-    estimatedShelfLifeDays: Math.round(r.estimatedShelfLifeDays),
+    estimatedShelfLifeDays,
     explicitExpirationDate,
     unitCost: (r.unitCost as number | null | undefined) ?? null,
     totalCost: (r.totalCost as number | null | undefined) ?? null,

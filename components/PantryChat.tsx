@@ -19,8 +19,17 @@ import {
   runPantryChatTurn,
   applyConfirmedAction,
   discardPendingAction,
+  isAbortError,
   type PendingConfirmation,
 } from '../services/pantryChatExecutor';
+
+// A hung or runaway backend (seen in practice: an unbounded local-model
+// generation) would otherwise strand the user on a spinner forever. 180s
+// comfortably covers even a full max_tokens generation on a slow local model
+// (e.g. ~100s for 4096 tokens at ~40 tok/s) while still being a real backstop
+// against a genuine hang; the in-UI Stop button covers "I don't want to wait
+// that long" for impatient taps on either backend.
+const CHAT_TURN_TIMEOUT_MS = 180000;
 
 // Global chat entry point: a FAB reachable from any tab, mounted once in
 // app/_layout.tsx so its conversation state survives switching tabs. Modal's
@@ -141,6 +150,7 @@ function PantryChatSheet({ visible, onClose }: { visible: boolean; onClose: () =
   // need to trigger re-renders.
   const transcriptRef = useRef<PantryChatMessage[]>([]);
   const streamingTextRef = useRef('');
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [streamingText, setStreamingText] = useState('');
@@ -165,8 +175,13 @@ function PantryChatSheet({ visible, onClose }: { visible: boolean; onClose: () =
     streamingTextRef.current = '';
     setStreamingText('');
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const timeout = setTimeout(() => controller.abort(), CHAT_TURN_TIMEOUT_MS);
+
     try {
       const updatedTranscript = await runPantryChatTurn(text, transcriptRef.current, {
+        signal: controller.signal,
         onTextDelta: (delta) => {
           streamingTextRef.current += delta;
           setStreamingText(streamingTextRef.current);
@@ -190,14 +205,31 @@ function PantryChatSheet({ visible, onClose }: { visible: boolean; onClose: () =
       });
       transcriptRef.current = updatedTranscript;
     } catch (e) {
-      appendMessage({
-        id: genId(),
-        kind: 'error',
-        text: e instanceof Error ? e.message : 'Something went wrong reaching the assistant.',
-      });
+      // expo/fetch's abort error is a plain Error with no distinguishing
+      // `.name` (unlike a standard DOMException AbortError), so checking
+      // our own controller's signal is the reliable way to know "this
+      // rejection is because WE canceled it" regardless of what shape the
+      // underlying fetch implementation throws.
+      if (controller.signal.aborted || isAbortError(e)) {
+        appendMessage({ id: genId(), kind: 'system-note', text: 'Stopped.' });
+      } else {
+        appendMessage({
+          id: genId(),
+          kind: 'error',
+          text: e instanceof Error ? e.message : 'Something went wrong reaching the assistant.',
+        });
+      }
     } finally {
+      clearTimeout(timeout);
+      abortControllerRef.current = null;
+      streamingTextRef.current = '';
+      setStreamingText('');
       setIsThinking(false);
     }
+  }
+
+  function handleStop() {
+    abortControllerRef.current?.abort();
   }
 
   function handleConfirm(msg: Extract<DisplayMessage, { kind: 'confirm-chip' }>) {
@@ -281,14 +313,20 @@ function PantryChatSheet({ visible, onClose }: { visible: boolean; onClose: () =
               multiline
               editable={!isThinking}
             />
-            <TouchableOpacity
-              style={[styles.sendButton, (!inputText.trim() || isThinking) && styles.sendButtonDisabled]}
-              onPress={handleSend}
-              activeOpacity={0.7}
-              disabled={!inputText.trim() || isThinking}
-            >
-              <Ionicons name="arrow-up" size={18} color="#EAF3DE" />
-            </TouchableOpacity>
+            {isThinking ? (
+              <TouchableOpacity style={styles.stopButton} onPress={handleStop} activeOpacity={0.7}>
+                <Ionicons name="stop" size={16} color={COLORS.redDark} />
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={[styles.sendButton, !inputText.trim() && styles.sendButtonDisabled]}
+                onPress={handleSend}
+                activeOpacity={0.7}
+                disabled={!inputText.trim()}
+              >
+                <Ionicons name="arrow-up" size={18} color="#EAF3DE" />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -483,5 +521,15 @@ const styles = StyleSheet.create({
   },
   sendButtonDisabled: {
     backgroundColor: COLORS.borderColor,
+  },
+  stopButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.alertCardBg,
+    borderWidth: 0.5,
+    borderColor: COLORS.alertBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

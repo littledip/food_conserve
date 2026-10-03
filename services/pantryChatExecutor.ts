@@ -3,7 +3,7 @@ import { usePantryStore, isRecallable } from '../stores/pantryStore';
 import { buildItemFromChatInput, buildUpdatePatchFromChatInput } from './pantryActions';
 import {
   PantryChatError,
-  buildPantryChatRequestBody,
+  isAbortError,
   buildPantrySnapshot,
   resolveItemId,
   validateAddItemsInput,
@@ -18,7 +18,9 @@ import {
   type ToolResultBlock,
   type ToolUseBlock,
 } from './pantryChat';
-import { sendPantryChatTurn } from './pantryChatApp';
+
+export { isAbortError };
+import { sendChatTurn } from './pantryChatBackend';
 
 // The store-aware agent loop: owns talking to pantryChatApp, executing
 // auto-apply tools directly against usePantryStore, deferring confirm-gated
@@ -44,6 +46,10 @@ export interface PantryChatTurnCallbacks {
   // Fired when a confirm-gated tool call (dispose_item_wasted, remove_item)
   // needs the user to tap Confirm/Cancel.
   onPendingConfirmation?: (pending: PendingConfirmation) => void;
+  // Lets the caller cancel the whole turn (user-tapped Stop, or a client-side
+  // timeout) — checked between loop iterations too, so an abort doesn't wait
+  // for a tool round-trip to finish before taking effect.
+  signal?: AbortSignal;
 }
 
 function successResult(toolUseId: string, summary: string): ToolResultBlock {
@@ -184,13 +190,20 @@ export async function runPantryChatTurn(
   ];
 
   for (let iteration = 0; iteration < MAX_LOOP_ITERATIONS; iteration++) {
+    if (callbacks.signal?.aborted) {
+      const err = new Error('Pantry chat turn was canceled.');
+      err.name = 'AbortError';
+      throw err;
+    }
     const state = usePantryStore.getState();
     const snapshot = buildPantrySnapshot(
       state.items,
       state.recallableItems.filter((r) => isRecallable(r.disposedAt)),
     );
-    const body = buildPantryChatRequestBody(messages, snapshot);
-    const result = await sendPantryChatTurn(body, { onTextDelta: callbacks.onTextDelta });
+    const result = await sendChatTurn(messages, snapshot, {
+      onTextDelta: callbacks.onTextDelta,
+      signal: callbacks.signal,
+    });
 
     messages = [...messages, { role: 'assistant', content: result.blocks }];
 
