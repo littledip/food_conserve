@@ -1,5 +1,5 @@
 import { fetch } from 'expo/fetch';
-import { PantryChatError, type AssistantContentBlock, type PantryChatRequestBody } from './pantryChat';
+import { PantryChatError, isAbortError, type AssistantContentBlock, type PantryChatRequestBody } from './pantryChat';
 import { readSseEvents } from './sseStream';
 import { getAnthropicApiKey } from './anthropicApiKey';
 import { applyStreamEvent, finalizeBlocks, type BlockAccumulator } from './pantryChatBlocks';
@@ -21,6 +21,11 @@ export interface SendPantryChatTurnOptions {
   // Fired per token as assistant prose streams in, for live-updating the chat
   // bubble. Not called for tool_use JSON deltas — those aren't user-visible.
   onTextDelta?: (delta: string) => void;
+  // Lets the caller cancel an in-flight request/stream (user-tapped Stop, or
+  // a client-side timeout). A genuinely hung or runaway generation has no
+  // other way to be interrupted — seen in practice with an unbounded local
+  // model response.
+  signal?: AbortSignal;
 }
 
 export async function sendPantryChatTurn(
@@ -44,8 +49,10 @@ export async function sendPantryChatTurn(
         'anthropic-version': ANTHROPIC_VERSION,
       },
       body: JSON.stringify({ ...body, stream: true }),
+      signal: options.signal,
     });
   } catch (e) {
+    if (isAbortError(e)) throw e;
     throw new PantryChatError('Pantry chat request failed to send', e);
   }
 

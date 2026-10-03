@@ -109,6 +109,33 @@ describe('validateAddItemsInput', () => {
   it('rejects an invalid storageLocation', () => {
     expect(validateAddItemsInput({ items: [{ ...validItem, storageLocation: 'garage' }] })).toBeNull();
   });
+
+  it('accepts a name-only item and fills in defaults for everything else', () => {
+    const result = validateAddItemsInput({ items: [{ name: 'Peanut Butter' }] });
+    expect(result).not.toBeNull();
+    expect(result!.items[0]).toEqual({
+      name: 'Peanut Butter',
+      category: 'other',
+      quantity: 1,
+      unitOfMeasure: 'each',
+      storageLocation: undefined,
+      estimatedShelfLifeDays: 14,
+      explicitExpirationDate: null,
+      unitCost: null,
+      totalCost: null,
+    });
+  });
+
+  it('still rejects a name-only item with no name at all', () => {
+    expect(validateAddItemsInput({ items: [{}] })).toBeNull();
+  });
+
+  it('defaults are applied independently — a provided category does not force providing others', () => {
+    const result = validateAddItemsInput({ items: [{ name: 'Peanut Butter', category: 'condiments' }] });
+    expect(result!.items[0].category).toBe('condiments');
+    expect(result!.items[0].quantity).toBe(1);
+    expect(result!.items[0].estimatedShelfLifeDays).toBe(14);
+  });
 });
 
 describe('validateItemIdInput', () => {
