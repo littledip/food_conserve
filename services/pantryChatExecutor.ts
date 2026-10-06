@@ -56,6 +56,15 @@ function successResult(toolUseId: string, summary: string): ToolResultBlock {
   return { type: 'tool_result', tool_use_id: toolUseId, content: summary };
 }
 
+// For results where a prose sentence risks the model echoing the wrong
+// number back (seen in practice: it twice reported the amount *used* as the
+// amount *remaining*, despite an explicit prompt instruction not to) —
+// explicit labeled JSON fields are harder to misattribute than a sentence
+// the model has to parse.
+function jsonSuccessResult(toolUseId: string, data: Record<string, unknown>): ToolResultBlock {
+  return { type: 'tool_result', tool_use_id: toolUseId, content: JSON.stringify({ status: 'ok', ...data }) };
+}
+
 function errorResult(toolUseId: string, message: string): ToolResultBlock {
   return { type: 'tool_result', tool_use_id: toolUseId, content: message, is_error: true };
 }
@@ -90,14 +99,21 @@ function executeAutoTool(block: ToolUseBlock, items: GroceryItem[]): ToolResultB
       if (!item) return errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`);
       if (validated.amount >= item.remainingQuantity) {
         store.disposeItem(item.id, 'used');
-        return successResult(block.id, `${item.name} is now fully used up.`);
+        return jsonSuccessResult(block.id, {
+          item: item.name,
+          fullyUsedUp: true,
+          remainingQuantity: 0,
+          unitOfMeasure: item.unitOfMeasure,
+        });
       }
       store.consumeItem(item.id, validated.amount);
       const remaining = item.remainingQuantity - validated.amount;
-      return successResult(
-        block.id,
-        `Used ${validated.amount} ${item.unitOfMeasure} of ${item.name}; ${remaining} ${item.unitOfMeasure} remaining.`,
-      );
+      return jsonSuccessResult(block.id, {
+        item: item.name,
+        amountUsed: validated.amount,
+        remainingQuantity: remaining,
+        unitOfMeasure: item.unitOfMeasure,
+      });
     }
     case 'mark_item_used_up': {
       const validated = validateItemIdInput(block.input);
