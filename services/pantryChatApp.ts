@@ -76,5 +76,7 @@ export async function sendPantryChatTurn(
     throw new PantryChatError('Pantry chat response was truncated (hit max_tokens) mid-turn.');
   }
 
-  return { blocks: finalizeBlocks(blocksByIndex), stopReason: stopReason ?? null };
+  const blocks = finalizeBlocks(blocksByIndex);
+
+  return { blocks, stopReason: stopReason ?? null };
 }
