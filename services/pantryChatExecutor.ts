@@ -69,82 +69,128 @@ function errorResult(toolUseId: string, message: string): ToolResultBlock {
   return { type: 'tool_result', tool_use_id: toolUseId, content: message, is_error: true };
 }
 
-function executeAutoTool(block: ToolUseBlock, items: GroceryItem[]): ToolResultBlock {
+// Most tool results leave narration to the model's next turn. `narration`
+// is set only for the specific case the model has proven unreliable at
+// summarizing correctly even with explicit, correct, impossible-to-misread
+// data (see add_items below) — when set, the caller uses it verbatim and
+// skips the extra model round-trip entirely rather than risking another
+// fabricated reply.
+interface ExecutedTool {
+  result: ToolResultBlock;
+  narration?: string;
+}
+
+function executeAutoTool(block: ToolUseBlock, items: GroceryItem[]): ExecutedTool {
   const store = usePantryStore.getState();
 
   switch (block.name) {
     case 'add_items': {
       const validated = validateAddItemsInput(block.input);
-      if (!validated) return errorResult(block.id, 'Invalid add_items input.');
+      if (!validated) return { result: errorResult(block.id, 'Invalid add_items input.') };
       const now = new Date();
-      for (const item of validated.items) {
-        store.addItem(buildItemFromChatInput(item, now));
+      // Computed against `items` as it was BEFORE this call, per name
+      // (case-insensitive).
+      const details = validated.items.map((item) => {
+        const nameLower = item.name.trim().toLowerCase();
+        const priorMatches = items.filter((i) => i.name.trim().toLowerCase() === nameLower);
+        const priorQuantity = priorMatches.reduce((sum, i) => sum + i.remainingQuantity, 0);
+        const built = buildItemFromChatInput(item, now);
+        store.addItem(built);
+        return {
+          item: item.name,
+          quantityAdded: item.quantity,
+          unitOfMeasure: item.unitOfMeasure,
+          storageLocation: built.storageLocation,
+          priorEntriesForThisItem: priorMatches.length,
+          priorTotalQuantityForThisItem: priorQuantity,
+          newTotalQuantityForThisItem: priorQuantity + item.quantity,
+        };
+      });
+      const result = jsonSuccessResult(block.id, { itemsAdded: validated.items.length, details });
+
+      // Seen in practice, four times, surviving two rounds of prompt
+      // tightening (structured priorEntriesForThisItem data, then a blunt
+      // instruction naming the exact forbidden phrases): when every item
+      // added is unambiguously brand-new, the model still sometimes
+      // fabricates "you already have one from a previous entry" out of
+      // nothing. When that ambiguity can't exist — zero prior entries for
+      // every item in this call — generate the confirmation deterministically
+      // instead of trusting the model to narrate it correctly.
+      if (details.every((d) => d.priorEntriesForThisItem === 0)) {
+        const narration = details
+          .map((d) => `${d.quantityAdded} ${d.unitOfMeasure} of ${d.item} to the ${d.storageLocation}`)
+          .join(' and ');
+        return { result, narration: `Added ${narration}.` };
       }
-      return successResult(block.id, `Added ${validated.items.length} item(s) to the pantry.`);
+      return { result };
     }
     case 'update_item': {
       const validated = validateUpdateItemInput(block.input);
-      if (!validated) return errorResult(block.id, 'Invalid update_item input.');
+      if (!validated) return { result: errorResult(block.id, 'Invalid update_item input.') };
       const item = resolveItemId(validated.itemId, items);
-      if (!item) return errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`);
+      if (!item) return { result: errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`) };
       const patch = buildUpdatePatchFromChatInput(validated, item);
-      if (Object.keys(patch).length === 0) return errorResult(block.id, 'No recognized fields to update.');
+      if (Object.keys(patch).length === 0) return { result: errorResult(block.id, 'No recognized fields to update.') };
       store.updateItem(item.id, patch);
-      return successResult(block.id, `Updated ${item.name}.`);
+      return { result: successResult(block.id, `Updated ${item.name}.`) };
     }
     case 'consume_item': {
       const validated = validateConsumeItemInput(block.input);
-      if (!validated) return errorResult(block.id, 'Invalid consume_item input.');
+      if (!validated) return { result: errorResult(block.id, 'Invalid consume_item input.') };
       const item = resolveItemId(validated.itemId, items);
-      if (!item) return errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`);
+      if (!item) return { result: errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`) };
       if (validated.amount >= item.remainingQuantity) {
         store.disposeItem(item.id, 'used');
-        return jsonSuccessResult(block.id, {
-          item: item.name,
-          fullyUsedUp: true,
-          remainingQuantity: 0,
-          unitOfMeasure: item.unitOfMeasure,
-        });
+        return {
+          result: jsonSuccessResult(block.id, {
+            item: item.name,
+            fullyUsedUp: true,
+            remainingQuantity: 0,
+            unitOfMeasure: item.unitOfMeasure,
+          }),
+        };
       }
       store.consumeItem(item.id, validated.amount);
       const remaining = item.remainingQuantity - validated.amount;
-      return jsonSuccessResult(block.id, {
-        item: item.name,
-        amountUsed: validated.amount,
-        remainingQuantity: remaining,
-        unitOfMeasure: item.unitOfMeasure,
-      });
+      return {
+        result: jsonSuccessResult(block.id, {
+          item: item.name,
+          amountUsed: validated.amount,
+          remainingQuantity: remaining,
+          unitOfMeasure: item.unitOfMeasure,
+        }),
+      };
     }
     case 'mark_item_used_up': {
       const validated = validateItemIdInput(block.input);
-      if (!validated) return errorResult(block.id, 'Invalid mark_item_used_up input.');
+      if (!validated) return { result: errorResult(block.id, 'Invalid mark_item_used_up input.') };
       const item = resolveItemId(validated.itemId, items);
-      if (!item) return errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`);
+      if (!item) return { result: errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`) };
       store.disposeItem(item.id, 'used');
-      return successResult(block.id, `${item.name} marked fully used up.`);
+      return { result: successResult(block.id, `${item.name} marked fully used up.`) };
     }
     case 'move_item': {
       const validated = validateMoveItemInput(block.input);
-      if (!validated) return errorResult(block.id, 'Invalid move_item input.');
+      if (!validated) return { result: errorResult(block.id, 'Invalid move_item input.') };
       const item = resolveItemId(validated.itemId, items);
-      if (!item) return errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`);
+      if (!item) return { result: errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`) };
       store.moveItem(item.id, validated.to);
-      return successResult(block.id, `${item.name} moved to the ${validated.to}.`);
+      return { result: successResult(block.id, `${item.name} moved to the ${validated.to}.`) };
     }
     case 'recall_item': {
       const validated = validateItemIdInput(block.input);
-      if (!validated) return errorResult(block.id, 'Invalid recall_item input.');
+      if (!validated) return { result: errorResult(block.id, 'Invalid recall_item input.') };
       const entry = store.recallableItems.find(
         (r) => r.item.id === validated.itemId && isRecallable(r.disposedAt),
       );
       if (!entry) {
-        return errorResult(block.id, `No recallable item with id ${validated.itemId} within the undo window.`);
+        return { result: errorResult(block.id, `No recallable item with id ${validated.itemId} within the undo window.`) };
       }
       store.recallItem(validated.itemId);
-      return successResult(block.id, `${entry.item.name} restored to the pantry.`);
+      return { result: successResult(block.id, `${entry.item.name} restored to the pantry.`) };
     }
     default:
-      return errorResult(block.id, `Unknown tool: ${block.name}`);
+      return { result: errorResult(block.id, `Unknown tool: ${block.name}`) };
   }
 }
 
@@ -152,11 +198,11 @@ function deferConfirmTool(
   block: ToolUseBlock,
   items: GroceryItem[],
   callbacks: PantryChatTurnCallbacks,
-): ToolResultBlock {
+): ExecutedTool {
   const validated = validateItemIdInput(block.input);
-  if (!validated) return errorResult(block.id, `Invalid ${block.name} input.`);
+  if (!validated) return { result: errorResult(block.id, `Invalid ${block.name} input.`) };
   const item = resolveItemId(validated.itemId, items);
-  if (!item) return errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`);
+  if (!item) return { result: errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`) };
 
   callbacks.onPendingConfirmation?.({
     toolUseId: block.id,
@@ -169,15 +215,17 @@ function deferConfirmTool(
   // without applying the mutation — the real action happens later, directly
   // against the store, when the user taps Confirm/Cancel on the chip.
   return {
-    type: 'tool_result',
-    tool_use_id: block.id,
-    content: JSON.stringify({
-      status: 'awaiting_user_confirmation',
-      note:
-        'The user must tap Confirm/Cancel in the app UI. Do not assume completion. On your next turn, ' +
-        'check whether this item still appears in CURRENT_PANTRY: if it is gone, the user confirmed; ' +
-        'if it is still present, they canceled or have not responded yet.',
-    }),
+    result: {
+      type: 'tool_result',
+      tool_use_id: block.id,
+      content: JSON.stringify({
+        status: 'awaiting_user_confirmation',
+        note:
+          'The user must tap Confirm/Cancel in the app UI. Do not assume completion. On your next turn, ' +
+          'check whether this item still appears in CURRENT_PANTRY: if it is gone, the user confirmed; ' +
+          'if it is still present, they canceled or have not responded yet.',
+      }),
+    },
   };
 }
 
@@ -185,10 +233,10 @@ function executeOrDeferToolUse(
   block: ToolUseBlock,
   items: GroceryItem[],
   callbacks: PantryChatTurnCallbacks,
-): ToolResultBlock {
+): ExecutedTool {
   if (CONFIRM_REQUIRED_TOOL_NAMES.has(block.name)) return deferConfirmTool(block, items, callbacks);
   if (AUTO_APPLY_TOOL_NAMES.has(block.name)) return executeAutoTool(block, items);
-  return errorResult(block.id, `Unknown tool: ${block.name}`);
+  return { result: errorResult(block.id, `Unknown tool: ${block.name}`) };
 }
 
 // Runs one user turn to completion: sends the message, executes/defers any
@@ -235,11 +283,29 @@ export async function runPantryChatTurn(
     }
 
     const toolResults: ToolResultBlock[] = [];
+    const narrations: string[] = [];
+    let allDeterministic = true;
     for (const block of toolUseBlocks) {
       const items = usePantryStore.getState().items;
-      toolResults.push(executeOrDeferToolUse(block, items, callbacks));
+      const executed = executeOrDeferToolUse(block, items, callbacks);
+      toolResults.push(executed.result);
+      if (executed.narration) {
+        narrations.push(executed.narration);
+      } else {
+        allDeterministic = false;
+      }
     }
     messages = [...messages, { role: 'user', content: toolResults }];
+
+    // Every tool call this round came back with a deterministic narration
+    // (currently: add_items where nothing added was ambiguous) — use it
+    // verbatim and skip the extra model round-trip that would otherwise
+    // narrate it, rather than risk a repeat of the fabrication this exists
+    // to prevent.
+    if (allDeterministic) {
+      callbacks.onAssistantMessage?.(narrations.join(' '));
+      return messages;
+    }
   }
 
   throw new PantryChatError('Pantry chat hit the maximum number of tool-use iterations without finishing.');

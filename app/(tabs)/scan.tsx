@@ -986,17 +986,21 @@ export default function ScanScreen() {
           native camera session is acquired fresh on every navigation. Avoids the
           stale-session bug where returning to the tab leaves the scanner dead. */}
       {(scanMode === 'barcode' || scanMode === 'receipt') && hasPermission === true && isFocused ? (
-        <CameraView
-          ref={cameraRef}
-          style={[styles.cameraArea, { paddingTop: insets.top }]}
-          facing="back"
-          barcodeScannerSettings={
-            scanMode === 'barcode' ? { barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e'] } : undefined
-          }
-          onBarcodeScanned={scanMode === 'barcode' && isScanning ? handleBarcodeScan : undefined}
-        >
+        <View style={[styles.cameraArea, { paddingTop: insets.top }]}>
+          {/* CameraView doesn't support children (warns and risks inconsistent
+              behavior) — render it as an absolute-fill background layer and
+              keep the overlay as a sibling instead, same final layout. */}
+          <CameraView
+            ref={cameraRef}
+            style={StyleSheet.absoluteFill}
+            facing="back"
+            barcodeScannerSettings={
+              scanMode === 'barcode' ? { barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e'] } : undefined
+            }
+            onBarcodeScanned={scanMode === 'barcode' && isScanning ? handleBarcodeScan : undefined}
+          />
           {cameraOverlay}
-        </CameraView>
+        </View>
       ) : (
         <View style={[styles.cameraArea, { paddingTop: insets.top }]}>
           {hasPermission === false ? (
