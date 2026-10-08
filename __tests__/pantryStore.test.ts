@@ -231,6 +231,20 @@ describe('store actions: disposeItem', () => {
     });
   });
 
+  it("disposeItem('wasted') defaults wasteMethod to 'trash' when omitted", () => {
+    usePantryStore.getState().disposeItem('today', 'wasted');
+    const event = usePantryStore.getState().dispositionLog[0];
+    expect(event.disposition).toBe('wasted');
+    expect(event.disposition === 'wasted' && event.wasteMethod).toBe('trash');
+  });
+
+  it("disposeItem('wasted') honors an explicit wasteMethod", () => {
+    usePantryStore.getState().disposeItem('today', 'wasted', 'compost');
+    const event = usePantryStore.getState().dispositionLog[0];
+    expect(event.disposition).toBe('wasted');
+    expect(event.disposition === 'wasted' && event.wasteMethod).toBe('compost');
+  });
+
   it('records expiredAtTime: true when expiration is in the past', () => {
     usePantryStore.getState().disposeItem('past', 'wasted');
     const event = usePantryStore.getState().dispositionLog[0];
@@ -430,6 +444,7 @@ describe('reviveDispositionEvent', () => {
       itemName: 'Chicken',
       category: 'protein',
       disposition: 'wasted',
+      wasteMethod: 'trash',
       quantity: 1.5,
       unitOfMeasure: 'lbs',
       date: NOW,

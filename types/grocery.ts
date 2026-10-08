@@ -100,17 +100,30 @@ export interface GroupedPantryItems {
 
 export type Disposition = 'used' | 'wasted';
 
-export interface DispositionEvent {
+// How a wasted item physically left the household. Only meaningful for
+// 'wasted' events — feeds the disposal-phase term (EPA WARM) of the Food
+// Score's environmental-impact weighting, separate from the production
+// footprint already captured by category/item. Defaults to 'trash'
+// (landfill) at disposal time; the user can change it before confirming.
+export type WasteMethod = 'trash' | 'compost' | 'drain';
+
+interface DispositionEventBase {
   id: string;                      // event id (separate from item id)
   itemId: string;
   itemName: string;
   category: ItemCategory;
-  disposition: Disposition;
   quantity: number;                // amount used or wasted in this event
   unitOfMeasure: string;
   date: Date;
   expiredAtTime: boolean;          // was the item past its effective expiration when disposed?
 }
+
+// Discriminated on `disposition` so wasteMethod can only exist on a 'wasted'
+// event — the type system enforces "empty method implies used" rather than
+// relying on a convention every call site has to remember.
+export type DispositionEvent =
+  | (DispositionEventBase & { disposition: 'used' })
+  | (DispositionEventBase & { disposition: 'wasted'; wasteMethod: WasteMethod });
 
 // Snapshot of a fully-disposed item, kept so the user can undo a mistaken
 // "Used all". DispositionEvent is intentionally lightweight for analytics;

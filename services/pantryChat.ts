@@ -1,4 +1,4 @@
-import type { GroceryItem, ItemCategory, RecallableItem, StorageLocation } from '../types/grocery';
+import type { GroceryItem, ItemCategory, RecallableItem, StorageLocation, WasteMethod } from '../types/grocery';
 import type { ChatAddItem, ChatUpdateItem } from './pantryActions';
 import { SHELF_LIFE_GUIDANCE } from './receiptVision';
 
@@ -134,6 +134,7 @@ ITEM REFERENCE RULES (critical):
 CONFIRMATION TIERS (the app enforces this — you just call the right tool):
 - add_items, update_item, consume_item, mark_item_used_up, move_item, and recall_item apply immediately when called.
 - dispose_item_wasted and remove_item are NOT applied immediately — the app shows the user a confirm/cancel control and hands you back a "pending" result. You can mention in your reply that you're waiting on their confirmation. On a LATER turn, check CURRENT_PANTRY: if the item is gone, they confirmed; if it's still present, they canceled or haven't responded — don't assume either way, and don't repeat the call unless asked again.
+- dispose_item_wasted takes a wasteMethod ('trash' | 'compost' | 'drain' | null). Only set it when the user actually said how they disposed of it (e.g. "composted it", "poured it down the drain") — otherwise leave it null. The app defaults to trash and shows the user a control to change it before they confirm, so you don't need to ask.
 
 CORRECTING A MISTAKE:
 - If the user wants to fix something about an item that's already in the pantry (wrong expiration estimate, wrong category, misspelled name, wrong storage location), call update_item on that item's id. NEVER call add_items to "fix" an existing item — that creates a duplicate instead of correcting it.
@@ -162,6 +163,7 @@ const CATEGORY_ENUM = [
 ];
 
 const LOCATION_ENUM = ['fridge', 'freezer', 'pantry'];
+const WASTE_METHOD_ENUM = ['trash', 'compost', 'drain'];
 
 const ITEM_ID_PROPERTY = {
   itemId: {
@@ -274,8 +276,16 @@ const DISPOSE_ITEM_WASTED_TOOL = {
   description: 'Record that an item was thrown out / spoiled / wasted. Irreversible — the app will ask the user to confirm before this actually applies.',
   input_schema: {
     type: 'object' as const,
-    properties: ITEM_ID_PROPERTY,
-    required: ['itemId'],
+    properties: {
+      ...ITEM_ID_PROPERTY,
+      wasteMethod: {
+        type: ['string', 'null'],
+        enum: [...WASTE_METHOD_ENUM, null],
+        description:
+          'If the user mentioned how they disposed of it (e.g. "composted it", "poured it down the drain"), set that. Otherwise null — the app defaults to trash and shows a control for the user to change it before confirming.',
+      },
+    },
+    required: ['itemId', 'wasteMethod'],
   },
 };
 
@@ -335,6 +345,7 @@ export function buildPantryChatRequestBody(
 
 const VALID_CATEGORIES: ReadonlySet<ItemCategory> = new Set(CATEGORY_ENUM as ItemCategory[]);
 const VALID_LOCATIONS: ReadonlySet<StorageLocation> = new Set(LOCATION_ENUM as StorageLocation[]);
+const VALID_WASTE_METHODS: ReadonlySet<WasteMethod> = new Set(WASTE_METHOD_ENUM as WasteMethod[]);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -471,6 +482,25 @@ export function validateItemIdInput(x: unknown): ItemIdInput | null {
   const r = x as Record<string, unknown>;
   if (!isNonEmptyString(r.itemId)) return null;
   return { itemId: r.itemId.trim() };
+}
+
+export interface DisposeItemWastedInput {
+  itemId: string;
+  wasteMethod: WasteMethod | null;
+}
+
+export function validateDisposeItemWastedInput(x: unknown): DisposeItemWastedInput | null {
+  if (typeof x !== 'object' || x === null) return null;
+  const r = x as Record<string, unknown>;
+  if (!isNonEmptyString(r.itemId)) return null;
+
+  let wasteMethod: WasteMethod | null = null;
+  if (r.wasteMethod !== null && r.wasteMethod !== undefined) {
+    if (typeof r.wasteMethod !== 'string' || !VALID_WASTE_METHODS.has(r.wasteMethod as WasteMethod)) return null;
+    wasteMethod = r.wasteMethod as WasteMethod;
+  }
+
+  return { itemId: r.itemId.trim(), wasteMethod };
 }
 
 export interface ConsumeItemInput {
