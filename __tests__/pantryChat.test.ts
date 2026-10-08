@@ -3,6 +3,7 @@ import {
   resolveItemId,
   validateAddItemsInput,
   validateConsumeItemInput,
+  validateDisposeItemWastedInput,
   validateItemIdInput,
   validateMoveItemInput,
   validateUpdateItemInput,
@@ -146,6 +147,39 @@ describe('validateItemIdInput', () => {
   it('rejects a missing or empty itemId', () => {
     expect(validateItemIdInput({})).toBeNull();
     expect(validateItemIdInput({ itemId: '' })).toBeNull();
+  });
+});
+
+describe('validateDisposeItemWastedInput', () => {
+  it('accepts an itemId with wasteMethod null, defaulting the field to null', () => {
+    expect(validateDisposeItemWastedInput({ itemId: 'x', wasteMethod: null })).toEqual({
+      itemId: 'x',
+      wasteMethod: null,
+    });
+  });
+
+  it('accepts an itemId with wasteMethod omitted entirely', () => {
+    expect(validateDisposeItemWastedInput({ itemId: 'x' })).toEqual({ itemId: 'x', wasteMethod: null });
+  });
+
+  it('accepts a valid explicit wasteMethod', () => {
+    expect(validateDisposeItemWastedInput({ itemId: 'x', wasteMethod: 'compost' })).toEqual({
+      itemId: 'x',
+      wasteMethod: 'compost',
+    });
+    expect(validateDisposeItemWastedInput({ itemId: 'x', wasteMethod: 'drain' })).toEqual({
+      itemId: 'x',
+      wasteMethod: 'drain',
+    });
+  });
+
+  it('rejects an invalid wasteMethod', () => {
+    expect(validateDisposeItemWastedInput({ itemId: 'x', wasteMethod: 'recycle' })).toBeNull();
+  });
+
+  it('rejects a missing or empty itemId', () => {
+    expect(validateDisposeItemWastedInput({ wasteMethod: 'trash' })).toBeNull();
+    expect(validateDisposeItemWastedInput({ itemId: '', wasteMethod: 'trash' })).toBeNull();
   });
 });
 

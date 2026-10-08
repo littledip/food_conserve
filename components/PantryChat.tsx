@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, FONT_SIZE } from '../constants/theme';
 import type { PantryChatMessage } from '../services/pantryChat';
+import type { WasteMethod } from '../types/grocery';
 import {
   runPantryChatTurn,
   applyConfirmedAction,
@@ -50,8 +51,17 @@ type DisplayMessage =
       toolName: PendingConfirmation['toolName'];
       itemId: string;
       itemName: string;
+      // Only meaningful when toolName is 'dispose_item_wasted'. Mutable —
+      // the chip lets the user change it before tapping Confirm.
+      wasteMethod?: WasteMethod;
       status: 'pending' | 'confirmed' | 'canceled';
     };
+
+const WASTE_METHOD_OPTIONS: { value: WasteMethod; label: string }[] = [
+  { value: 'trash', label: 'Trash' },
+  { value: 'compost', label: 'Compost' },
+  { value: 'drain', label: 'Drain' },
+];
 
 const CONFIRM_CHIP_COPY: Record<PendingConfirmation['toolName'], { question: string; confirmedNote: string }> = {
   dispose_item_wasted: {
@@ -68,16 +78,40 @@ function ConfirmChip({
   msg,
   onConfirm,
   onCancel,
+  onSelectMethod,
 }: {
   msg: Extract<DisplayMessage, { kind: 'confirm-chip' }>;
   onConfirm: () => void;
   onCancel: () => void;
+  onSelectMethod: (method: WasteMethod) => void;
 }) {
   const copy = CONFIRM_CHIP_COPY[msg.toolName];
+  const showMethodPicker = msg.toolName === 'dispose_item_wasted' && msg.status === 'pending';
   return (
     <View style={styles.confirmChip}>
       <Text style={styles.confirmChipItem}>{msg.itemName}</Text>
       <Text style={styles.confirmChipQuestion}>{copy.question}</Text>
+      {showMethodPicker && (
+        <View style={styles.methodRow}>
+          {WASTE_METHOD_OPTIONS.map((opt) => (
+            <TouchableOpacity
+              key={opt.value}
+              style={[styles.methodChip, msg.wasteMethod === opt.value && styles.methodChipActive]}
+              onPress={() => onSelectMethod(opt.value)}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[
+                  styles.methodChipText,
+                  msg.wasteMethod === opt.value && styles.methodChipTextActive,
+                ]}
+              >
+                {opt.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
       {msg.status === 'pending' ? (
         <View style={styles.confirmChipActions}>
           <TouchableOpacity style={styles.confirmChipCancel} onPress={onCancel} activeOpacity={0.7}>
@@ -166,6 +200,10 @@ function PantryChatSheet({ visible, onClose }: { visible: boolean; onClose: () =
     setMessages((prev) => prev.map((m) => (m.id === id && m.kind === 'confirm-chip' ? { ...m, status } : m)));
   };
 
+  const updateChipMethod = (id: string, wasteMethod: WasteMethod) => {
+    setMessages((prev) => prev.map((m) => (m.id === id && m.kind === 'confirm-chip' ? { ...m, wasteMethod } : m)));
+  };
+
   async function handleSend() {
     const text = inputText.trim();
     if (!text || isThinking) return;
@@ -199,6 +237,7 @@ function PantryChatSheet({ visible, onClose }: { visible: boolean; onClose: () =
             toolName: pending.toolName,
             itemId: pending.itemId,
             itemName: pending.itemName,
+            wasteMethod: pending.wasteMethod,
             status: 'pending',
           });
         },
@@ -238,6 +277,7 @@ function PantryChatSheet({ visible, onClose }: { visible: boolean; onClose: () =
       toolName: msg.toolName,
       itemId: msg.itemId,
       itemName: msg.itemName,
+      wasteMethod: msg.wasteMethod,
     });
     updateChip(msg.id, 'confirmed');
   }
@@ -286,6 +326,7 @@ function PantryChatSheet({ visible, onClose }: { visible: boolean; onClose: () =
                   msg={msg}
                   onConfirm={() => handleConfirm(msg)}
                   onCancel={() => handleCancel(msg)}
+                  onSelectMethod={(method) => updateChipMethod(msg.id, method)}
                 />
               ) : (
                 <MessageBubble key={msg.id} msg={msg} />
@@ -455,6 +496,32 @@ const styles = StyleSheet.create({
     color: COLORS.redText,
     marginTop: 2,
     marginBottom: SPACING.sm,
+  },
+  methodRow: {
+    flexDirection: 'row',
+    gap: SPACING.xs,
+    marginBottom: SPACING.sm,
+  },
+  methodChip: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 0.5,
+    borderColor: COLORS.alertBorder,
+    backgroundColor: COLORS.cardWhite,
+  },
+  methodChipActive: {
+    backgroundColor: COLORS.redDark,
+    borderColor: COLORS.redDark,
+  },
+  methodChipText: {
+    fontSize: FONT_SIZE.xs,
+    color: COLORS.textMuted,
+    fontWeight: '500',
+  },
+  methodChipTextActive: {
+    color: '#FCEBEB',
   },
   confirmChipActions: {
     flexDirection: 'row',

@@ -12,7 +12,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../constants/theme';
-import { GroceryItem, ItemCategory, GroupedPantryItems, RecallableItem } from '../../types/grocery';
+import { GroceryItem, ItemCategory, GroupedPantryItems, RecallableItem, WasteMethod } from '../../types/grocery';
 import {
   useAllItems,
   useUpdateItem,
@@ -229,6 +229,12 @@ const RECATEGORIZE_OPTIONS: ItemCategory[] = [
   'condiments', 'beverages', 'frozen', 'snacks',
 ];
 
+const WASTE_METHOD_OPTIONS: { value: WasteMethod; label: string }[] = [
+  { value: 'trash', label: 'Trash' },
+  { value: 'compost', label: 'Compost' },
+  { value: 'drain', label: 'Drain' },
+];
+
 export default function PantryScreen() {
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ expand?: string }>();
@@ -237,6 +243,7 @@ export default function PantryScreen() {
   const [filterVisible, setFilterVisible] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [customAmount, setCustomAmount] = useState('');
+  const [wasteMethod, setWasteMethod] = useState<WasteMethod>('trash');
   const [view, setView] = useState<'active' | 'recall'>('active');
 
   const items = useAllItems();
@@ -255,6 +262,7 @@ export default function PantryScreen() {
   const closeSheet = () => {
     setSelectedItemId(null);
     setCustomAmount('');
+    setWasteMethod('trash');
   };
 
   const useAll = () => {
@@ -281,7 +289,7 @@ export default function PantryScreen() {
   };
 
   const wasteAll = () => {
-    if (selectedItemId) disposeItem(selectedItemId, 'wasted');
+    if (selectedItemId) disposeItem(selectedItemId, 'wasted', wasteMethod);
     closeSheet();
   };
 
@@ -494,6 +502,27 @@ export default function PantryScreen() {
                 <Text style={styles.freezeButtonText}>Move to freezer</Text>
               </TouchableOpacity>
             )}
+
+            <Text style={styles.detailSectionLabel}>If thrown out, disposed via</Text>
+            <View style={styles.methodRow}>
+              {WASTE_METHOD_OPTIONS.map((opt) => (
+                <TouchableOpacity
+                  key={opt.value}
+                  style={[styles.methodChip, wasteMethod === opt.value && styles.methodChipActive]}
+                  onPress={() => setWasteMethod(opt.value)}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.methodChipText,
+                      wasteMethod === opt.value && styles.methodChipTextActive,
+                    ]}
+                  >
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
 
             <TouchableOpacity
               style={styles.wastedButton}
@@ -862,6 +891,31 @@ const styles = StyleSheet.create({
     color: COLORS.redDark,
     fontSize: 13,
     fontWeight: '500',
+  },
+  methodRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  methodChip: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 0.5,
+    borderColor: COLORS.borderColor,
+    backgroundColor: COLORS.cardWhite,
+  },
+  methodChipActive: {
+    backgroundColor: COLORS.alertCardBg,
+    borderColor: COLORS.alertBorder,
+  },
+  methodChipText: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    fontWeight: '500',
+  },
+  methodChipTextActive: {
+    color: COLORS.redDark,
   },
   pickerPanel: {
     backgroundColor: COLORS.cardWhite,

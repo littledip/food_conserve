@@ -11,6 +11,7 @@ import {
   StorageEventType,
   Disposition,
   DispositionEvent,
+  WasteMethod,
   RecallableItem,
 } from '../types/grocery';
 
@@ -115,7 +116,10 @@ type PantryState = {
   removeItem: (id: string) => void;
   moveItem: (id: string, to: StorageLocation) => void;
   consumeItem: (id: string, used: number) => void;
-  disposeItem: (id: string, disposition: Disposition) => void;
+  // wasteMethod is only meaningful when disposition is 'wasted'; defaults to
+  // 'trash' when omitted. Passing it with disposition: 'used' is harmless —
+  // buildDispositionEvent only reads it in the 'wasted' branch.
+  disposeItem: (id: string, disposition: Disposition, wasteMethod?: WasteMethod) => void;
   recallItem: (itemId: string) => void;
   setBarcodeCategoryOverride: (barcode: string, category: ItemCategory) => void;
   resetPantry: () => void;
@@ -128,18 +132,25 @@ const buildDispositionEvent = (
   item: GroceryItem,
   disposition: Disposition,
   quantity: number,
+  wasteMethod?: WasteMethod,
   now: Date = new Date(),
-): DispositionEvent => ({
-  id: generateEventId(),
-  itemId: item.id,
-  itemName: item.name,
-  category: item.category,
-  disposition,
-  quantity,
-  unitOfMeasure: item.unitOfMeasure,
-  date: now,
-  expiredAtTime: item.effectiveExpirationDate.getTime() < now.getTime(),
-});
+): DispositionEvent => {
+  const base = {
+    id: generateEventId(),
+    itemId: item.id,
+    itemName: item.name,
+    category: item.category,
+    quantity,
+    unitOfMeasure: item.unitOfMeasure,
+    date: now,
+    expiredAtTime: item.effectiveExpirationDate.getTime() < now.getTime(),
+  };
+  // Defaults to 'trash' (landfill) — the conservative assumption backed by
+  // real EPA WARM data; the UI lets the user change it before confirming.
+  return disposition === 'wasted'
+    ? { ...base, disposition: 'wasted', wasteMethod: wasteMethod ?? 'trash' }
+    : { ...base, disposition: 'used' };
+};
 
 export const usePantryStore = create<PantryState>()(
   persist(
@@ -198,11 +209,11 @@ export const usePantryStore = create<PantryState>()(
           };
         }),
 
-      disposeItem: (id, disposition) =>
+      disposeItem: (id, disposition, wasteMethod) =>
         set((state) => {
           const item = state.items.find((i) => i.id === id);
           if (!item) return state;
-          const event = buildDispositionEvent(item, disposition, item.remainingQuantity);
+          const event = buildDispositionEvent(item, disposition, item.remainingQuantity, wasteMethod);
           const pruned = state.recallableItems.filter((r) => isRecallable(r.disposedAt, event.date));
           const recallableItems =
             disposition === 'used'

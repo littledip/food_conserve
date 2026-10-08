@@ -1,4 +1,4 @@
-import type { GroceryItem } from '../types/grocery';
+import type { GroceryItem, WasteMethod } from '../types/grocery';
 import { usePantryStore, isRecallable } from '../stores/pantryStore';
 import { buildItemFromChatInput, buildUpdatePatchFromChatInput } from './pantryActions';
 import {
@@ -8,6 +8,7 @@ import {
   resolveItemId,
   validateAddItemsInput,
   validateConsumeItemInput,
+  validateDisposeItemWastedInput,
   validateItemIdInput,
   validateMoveItemInput,
   validateUpdateItemInput,
@@ -35,6 +36,9 @@ export interface PendingConfirmation {
   toolName: 'dispose_item_wasted' | 'remove_item';
   itemId: string;
   itemName: string;
+  // Only meaningful for 'dispose_item_wasted'. Defaults to 'trash'; the UI
+  // lets the user change it before tapping Confirm.
+  wasteMethod?: WasteMethod;
 }
 
 export interface PantryChatTurnCallbacks {
@@ -199,16 +203,30 @@ function deferConfirmTool(
   items: GroceryItem[],
   callbacks: PantryChatTurnCallbacks,
 ): ExecutedTool {
-  const validated = validateItemIdInput(block.input);
-  if (!validated) return { result: errorResult(block.id, `Invalid ${block.name} input.`) };
-  const item = resolveItemId(validated.itemId, items);
-  if (!item) return { result: errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`) };
+  // dispose_item_wasted carries an extra, optional wasteMethod field that
+  // remove_item doesn't have — validated separately.
+  let itemId: string;
+  let wasteMethod: WasteMethod | undefined;
+  if (block.name === 'dispose_item_wasted') {
+    const validated = validateDisposeItemWastedInput(block.input);
+    if (!validated) return { result: errorResult(block.id, 'Invalid dispose_item_wasted input.') };
+    itemId = validated.itemId;
+    wasteMethod = validated.wasteMethod ?? 'trash';
+  } else {
+    const validated = validateItemIdInput(block.input);
+    if (!validated) return { result: errorResult(block.id, `Invalid ${block.name} input.`) };
+    itemId = validated.itemId;
+  }
+
+  const item = resolveItemId(itemId, items);
+  if (!item) return { result: errorResult(block.id, `No item with id ${itemId} in the current pantry.`) };
 
   callbacks.onPendingConfirmation?.({
     toolUseId: block.id,
     toolName: block.name as 'dispose_item_wasted' | 'remove_item',
     itemId: item.id,
     itemName: item.name,
+    wasteMethod,
   });
 
   // Satisfies the API's "every tool_use needs a tool_result" requirement
@@ -317,7 +335,7 @@ export async function runPantryChatTurn(
 export function applyConfirmedAction(pending: PendingConfirmation): void {
   const store = usePantryStore.getState();
   if (pending.toolName === 'dispose_item_wasted') {
-    store.disposeItem(pending.itemId, 'wasted');
+    store.disposeItem(pending.itemId, 'wasted', pending.wasteMethod ?? 'trash');
   } else {
     store.removeItem(pending.itemId);
   }
