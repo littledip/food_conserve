@@ -23,6 +23,7 @@ import {
   useRecallItem,
   fractionalUseAmount,
 } from '../../stores/pantryStore';
+import { formatQuantity } from '../../services/quantityFormat';
 
 const CATEGORY_ORDER: ItemCategory[] = [
   'protein', 'produce', 'dairy', 'grains',
@@ -456,7 +457,9 @@ export default function PantryScreen() {
           <View style={[styles.detailSheet, { paddingBottom: insets.bottom + 16 }]}>
             <Text style={styles.detailHeader}>{selectedItem.name}</Text>
             <Text style={styles.detailMeta}>
-              {selectedItem.remainingQuantity} of {selectedItem.originalQuantity} {selectedItem.unitOfMeasure} remaining
+              {selectedItem.originalQuantity === 1
+                ? `${formatQuantity(selectedItem.remainingQuantity)} remaining`
+                : `${formatQuantity(selectedItem.remainingQuantity)} of ${selectedItem.originalQuantity} ${selectedItem.unitOfMeasure} remaining`}
             </Text>
 
             <Text style={styles.detailSectionLabel}>Mark as used</Text>

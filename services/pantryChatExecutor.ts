@@ -1,6 +1,7 @@
 import type { GroceryItem, WasteMethod } from '../types/grocery';
 import { usePantryStore, isRecallable } from '../stores/pantryStore';
 import { buildItemFromChatInput, buildUpdatePatchFromChatInput } from './pantryActions';
+import { formatQuantity } from './quantityFormat';
 import {
   PantryChatError,
   isAbortError,
@@ -73,12 +74,19 @@ function errorResult(toolUseId: string, message: string): ToolResultBlock {
   return { type: 'tool_result', tool_use_id: toolUseId, content: message, is_error: true };
 }
 
-// Most tool results leave narration to the model's next turn. `narration`
-// is set only for the specific case the model has proven unreliable at
-// summarizing correctly even with explicit, correct, impossible-to-misread
-// data (see add_items below) — when set, the caller uses it verbatim and
-// skips the extra model round-trip entirely rather than risking another
-// fabricated reply.
+// Every successful auto-apply tool sets `narration` — a deterministic
+// sentence built from the same already-known facts as `result`. Seen in
+// practice, repeatedly, across different tools (add_items fabricating a
+// nonexistent "previous entry", mark_item_used_up/consume_item narrating
+// their own just-completed action as if it were a surprising pre-existing
+// state it stumbled onto): letting the model free-narrate a second turn
+// after seeing the refreshed snapshot is unreliable even when the actual
+// data is unambiguous. When every tool call in a turn returns a narration,
+// the caller uses it verbatim and skips the extra model round-trip
+// entirely, removing the opportunity for that class of mistake rather than
+// re-prompting against it. Confirm-gated tools deliberately never set this —
+// the model's framing of *why* it's asking for confirmation is real value,
+// not something to bypass.
 interface ExecutedTool {
   result: ToolResultBlock;
   narration?: string;
@@ -112,14 +120,13 @@ function executeAutoTool(block: ToolUseBlock, items: GroceryItem[]): ExecutedToo
       });
       const result = jsonSuccessResult(block.id, { itemsAdded: validated.items.length, details });
 
-      // Seen in practice, four times, surviving two rounds of prompt
-      // tightening (structured priorEntriesForThisItem data, then a blunt
-      // instruction naming the exact forbidden phrases): when every item
-      // added is unambiguously brand-new, the model still sometimes
-      // fabricates "you already have one from a previous entry" out of
-      // nothing. When that ambiguity can't exist — zero prior entries for
-      // every item in this call — generate the confirmation deterministically
-      // instead of trusting the model to narrate it correctly.
+      // add_items is the one auto-apply tool where narration is conditional,
+      // not automatic: a genuine restock (priorEntriesForThisItem > 0) tested
+      // well with the model's own narration (it correctly distinguished
+      // batches, different expirations, etc.), so that case is left to the
+      // model. Only the brand-new-item case — the one that repeatedly
+      // fabricated a nonexistent "previous entry" — gets the deterministic
+      // bypass.
       if (details.every((d) => d.priorEntriesForThisItem === 0)) {
         const narration = details
           .map((d) => `${d.quantityAdded} ${d.unitOfMeasure} of ${d.item} to the ${d.storageLocation}`)
@@ -136,7 +143,8 @@ function executeAutoTool(block: ToolUseBlock, items: GroceryItem[]): ExecutedToo
       const patch = buildUpdatePatchFromChatInput(validated, item);
       if (Object.keys(patch).length === 0) return { result: errorResult(block.id, 'No recognized fields to update.') };
       store.updateItem(item.id, patch);
-      return { result: successResult(block.id, `Updated ${item.name}.`) };
+      const narration = `Updated ${item.name}.`;
+      return { result: successResult(block.id, narration), narration };
     }
     case 'consume_item': {
       const validated = validateConsumeItemInput(block.input);
@@ -145,6 +153,7 @@ function executeAutoTool(block: ToolUseBlock, items: GroceryItem[]): ExecutedToo
       if (!item) return { result: errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`) };
       if (validated.amount >= item.remainingQuantity) {
         store.disposeItem(item.id, 'used');
+        const narration = `${item.name} is now fully used up.`;
         return {
           result: jsonSuccessResult(block.id, {
             item: item.name,
@@ -152,10 +161,12 @@ function executeAutoTool(block: ToolUseBlock, items: GroceryItem[]): ExecutedToo
             remainingQuantity: 0,
             unitOfMeasure: item.unitOfMeasure,
           }),
+          narration,
         };
       }
       store.consumeItem(item.id, validated.amount);
       const remaining = item.remainingQuantity - validated.amount;
+      const narration = `Used ${validated.amount} ${item.unitOfMeasure} of ${item.name}; ${formatQuantity(remaining)} ${item.unitOfMeasure} left.`;
       return {
         result: jsonSuccessResult(block.id, {
           item: item.name,
@@ -163,6 +174,7 @@ function executeAutoTool(block: ToolUseBlock, items: GroceryItem[]): ExecutedToo
           remainingQuantity: remaining,
           unitOfMeasure: item.unitOfMeasure,
         }),
+        narration,
       };
     }
     case 'mark_item_used_up': {
@@ -171,7 +183,8 @@ function executeAutoTool(block: ToolUseBlock, items: GroceryItem[]): ExecutedToo
       const item = resolveItemId(validated.itemId, items);
       if (!item) return { result: errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`) };
       store.disposeItem(item.id, 'used');
-      return { result: successResult(block.id, `${item.name} marked fully used up.`) };
+      const narration = `${item.name} marked fully used up.`;
+      return { result: successResult(block.id, narration), narration };
     }
     case 'move_item': {
       const validated = validateMoveItemInput(block.input);
@@ -179,7 +192,8 @@ function executeAutoTool(block: ToolUseBlock, items: GroceryItem[]): ExecutedToo
       const item = resolveItemId(validated.itemId, items);
       if (!item) return { result: errorResult(block.id, `No item with id ${validated.itemId} in the current pantry.`) };
       store.moveItem(item.id, validated.to);
-      return { result: successResult(block.id, `${item.name} moved to the ${validated.to}.`) };
+      const narration = `Moved ${item.name} to the ${validated.to}.`;
+      return { result: successResult(block.id, narration), narration };
     }
     case 'recall_item': {
       const validated = validateItemIdInput(block.input);
@@ -191,7 +205,8 @@ function executeAutoTool(block: ToolUseBlock, items: GroceryItem[]): ExecutedToo
         return { result: errorResult(block.id, `No recallable item with id ${validated.itemId} within the undo window.`) };
       }
       store.recallItem(validated.itemId);
-      return { result: successResult(block.id, `${entry.item.name} restored to the pantry.`) };
+      const narration = `Restored ${entry.item.name} to the pantry.`;
+      return { result: successResult(block.id, narration), narration };
     }
     default:
       return { result: errorResult(block.id, `Unknown tool: ${block.name}`) };

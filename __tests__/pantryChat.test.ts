@@ -55,6 +55,35 @@ describe('buildPantrySnapshot', () => {
     const snapshot = buildPantrySnapshot([], recallable, now);
     expect(snapshot.recentlyUsed).toEqual([{ itemId: 'item-2', name: 'Eggs', disposedDaysAgo: 2 }]);
   });
+
+  it('sets otherEntriesWithSameName to 0 when no other item shares the name', () => {
+    const item = makeItem({ name: 'Milk' });
+    const snapshot = buildPantrySnapshot([item], [], now);
+    expect(snapshot.items[0].otherEntriesWithSameName).toBe(0);
+  });
+
+  it('counts other entries sharing the same name, case-insensitively', () => {
+    const items = [
+      makeItem({ id: 'a', name: 'Blackberries' }),
+      makeItem({ id: 'b', name: 'blackberries' }),
+      makeItem({ id: 'c', name: 'Eggs' }),
+    ];
+    const snapshot = buildPantrySnapshot(items, [], now);
+    const byId = Object.fromEntries(snapshot.items.map((i) => [i.id, i.otherEntriesWithSameName]));
+    expect(byId.a).toBe(1);
+    expect(byId.b).toBe(1);
+    expect(byId.c).toBe(0);
+  });
+
+  it('counts correctly across three entries sharing a name', () => {
+    const items = [
+      makeItem({ id: 'a', name: 'Kiwis' }),
+      makeItem({ id: 'b', name: 'Kiwis' }),
+      makeItem({ id: 'c', name: 'Kiwis' }),
+    ];
+    const snapshot = buildPantrySnapshot(items, [], now);
+    expect(snapshot.items.map((i) => i.otherEntriesWithSameName)).toEqual([2, 2, 2]);
+  });
 });
 
 describe('validateAddItemsInput', () => {
