@@ -10,7 +10,15 @@ function tabIcon(focused: boolean, active: IoniconName, inactive: IoniconName) {
   // SDK 57 / react-navigation types — Ionicons already accepts ColorValue,
   // so widen here rather than narrowing what we pass to it.
   return ({ color, size }: { color: ColorValue; size: number }) => (
-    <Ionicons name={focused ? active : inactive} size={size} color={color} />
+    // react-navigation's tabBarIcon color is typed as the full ColorValue
+    // (which includes `number`/`null` for native-driver animated colors),
+    // but Ionicons only accepts string | NativeColorValue — react-navigation
+    // only ever actually passes a hex string here, so narrow accordingly.
+    <Ionicons
+      name={focused ? active : inactive}
+      size={size}
+      color={typeof color === 'number' || color === null ? undefined : color}
+    />
   );
 }
 
