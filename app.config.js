@@ -38,6 +38,7 @@ module.exports = {
       '@react-native-community/datetimepicker',
       'expo-asset',
       'expo-font',
+      'expo-status-bar',
     ],
     extra: {
       // Read at metro/expo build time. Available to the app via
