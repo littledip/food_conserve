@@ -8,6 +8,8 @@ import {
   reviveItem,
   reviveDispositionEvent,
   usePantryStore,
+  pendingPeriodCheckpoints,
+  streakBrokenBy,
 } from '../stores/pantryStore';
 
 const NOW = new Date('2026-05-09T12:00:00Z');
@@ -446,6 +448,7 @@ describe('reviveDispositionEvent', () => {
       disposition: 'wasted',
       wasteMethod: 'trash',
       quantity: 1.5,
+      originalQuantity: 2,
       unitOfMeasure: 'lbs',
       date: NOW,
       expiredAtTime: true,
@@ -467,7 +470,7 @@ describe('store actions: resetPantry', () => {
       dispositionLog: [
         {
           id: 'evt-1', itemId: 'a', itemName: 'a', category: 'other',
-          disposition: 'used', quantity: 1, unitOfMeasure: 'units',
+          disposition: 'used', quantity: 1, originalQuantity: 1, unitOfMeasure: 'units',
           date: NOW, expiredAtTime: false,
         },
       ],
@@ -608,5 +611,150 @@ describe('store actions: recallItem and disposeItem snapshotting', () => {
     usePantryStore.getState().disposeItem('milk', 'used');
     const recallable = usePantryStore.getState().recallableItems;
     expect(recallable.map((r) => r.item.id)).toEqual(['milk']); // stale dropped
+  });
+});
+
+// All dates here use the local new Date(y, m, d) constructor — matching
+// how getCurrentMonthBounds/pendingPeriodCheckpoints themselves interpret
+// "now" — rather than ISO 'Z' strings, which could shift to a different
+// local calendar day/month depending on the test machine's timezone.
+const wastedOn = (date: Date, id = `w-${date.getTime()}`): DispositionEvent => ({
+  id, itemId: 'seed', itemName: 'seed', category: 'other',
+  disposition: 'wasted', wasteMethod: 'trash',
+  quantity: 1, originalQuantity: 1, unitOfMeasure: 'units', date, expiredAtTime: false,
+});
+
+describe('pendingPeriodCheckpoints', () => {
+  it('checkpoints a fully-elapsed, fully-clean month', () => {
+    const now = new Date(2026, 11, 1); // Dec 1, 2026
+    const { newEntries, newLastCheckpointAt } = pendingPeriodCheckpoints([], null, now);
+    expect(newEntries).toHaveLength(1);
+    expect(newEntries[0]).toMatchObject({ length: 30, trigger: 'period_end' }); // November has 30 days
+    expect(newEntries[0].endedOn).toEqual(new Date(2026, 10, 30));
+    expect(newLastCheckpointAt).toEqual(new Date(2026, 10, 30));
+  });
+
+  it('records a zero-length entry when the month closed on a waste day', () => {
+    // Symmetric with the 'wasted' trigger, which also persists zeros.
+    const now = new Date(2026, 11, 1); // Dec 1, 2026
+    const { newEntries } = pendingPeriodCheckpoints([wastedOn(new Date(2026, 10, 30))], null, now);
+    expect(newEntries).toHaveLength(1);
+    expect(newEntries[0]).toMatchObject({ length: 0, trigger: 'period_end' });
+  });
+
+  it('counts only the clean tail when waste landed mid-month', () => {
+    const now = new Date(2026, 11, 1); // Dec 1, 2026
+    const { newEntries } = pendingPeriodCheckpoints([wastedOn(new Date(2026, 10, 20))], null, now);
+    // Nov 21-30 inclusive = 10 full clean days still running at month close.
+    expect(newEntries).toHaveLength(1);
+    expect(newEntries[0].length).toBe(10);
+  });
+
+  it('does not touch the current, still-in-progress month', () => {
+    const now = new Date(2026, 10, 15); // Nov 15, 2026 -- still mid-November
+    const { newEntries, newLastCheckpointAt } = pendingPeriodCheckpoints([], null, now);
+    expect(newEntries).toEqual([]);
+    expect(newLastCheckpointAt).toBeNull();
+  });
+
+  it('backfills multiple elapsed months in order', () => {
+    const now = new Date(2027, 1, 1); // Feb 1, 2027
+    const { newEntries, newLastCheckpointAt } = pendingPeriodCheckpoints([], null, now);
+    expect(newEntries.map((e) => e.length)).toEqual([30, 31, 31]); // Nov, Dec, Jan
+    expect(newLastCheckpointAt).toEqual(new Date(2027, 0, 31));
+  });
+
+  it('tolerates an unrevived ISO-string lastCheckpointAt without crashing', () => {
+    // Persisted Dates come back from AsyncStorage as strings; one reached
+    // this path in practice and crashed on .getFullYear(). The type says
+    // Date, so the cast mirrors what actually arrived at runtime.
+    const asStoredJson = new Date(2026, 10, 30).toISOString() as unknown as Date;
+    const now = new Date(2026, 11, 15); // Dec 15, 2026
+    expect(() => pendingPeriodCheckpoints([], asStoredJson, now)).not.toThrow();
+    const { newEntries } = pendingPeriodCheckpoints([], asStoredJson, now);
+    // Treated identically to the equivalent Date: November already covered,
+    // so only nothing-new — not a spurious re-checkpoint.
+    expect(newEntries).toEqual([]);
+  });
+
+  it('does not re-checkpoint a month already covered by lastCheckpointAt', () => {
+    const now = new Date(2026, 11, 15); // Dec 15, 2026
+    const alreadyCheckpointed = new Date(2026, 10, 30); // Nov 30, 2026
+    const { newEntries, newLastCheckpointAt } = pendingPeriodCheckpoints([], alreadyCheckpointed, now);
+    expect(newEntries).toEqual([]);
+    expect(newLastCheckpointAt).toEqual(alreadyCheckpointed);
+  });
+});
+
+describe('streakBrokenBy', () => {
+  it('records N-1 full days when waste lands on the Nth (in-progress) day', () => {
+    // Window opens Nov 1; waste on Nov 11 means Nov 1-10 were full clean
+    // days (the display would have read 11 counting today).
+    const breakDate = new Date(2026, 10, 11);
+    const result = streakBrokenBy([wastedOn(breakDate)], breakDate);
+    expect(result).toMatchObject({ length: 10, trigger: 'wasted' });
+    expect(result.endedOn).toEqual(new Date(2026, 10, 10));
+  });
+
+  it('records 0 when waste lands on the very first day of the tracking window', () => {
+    const breakDate = new Date(2026, 10, 1); // Nov 1 = FOOD_SCORE_TRACKING_START
+    const result = streakBrokenBy([wastedOn(breakDate)], breakDate);
+    expect(result.length).toBe(0);
+  });
+
+  it('records 0 for a back-to-back waste day', () => {
+    const firstBreak = new Date(2026, 10, 10);
+    const secondBreak = new Date(2026, 10, 11);
+    const log = [wastedOn(firstBreak, 'w1'), wastedOn(secondBreak, 'w2')];
+    expect(streakBrokenBy(log, secondBreak).length).toBe(0);
+  });
+
+  it('never reaches back before the tracking window, even with older waste history', () => {
+    // A long-dormant pantry: last waste was back in October, well before
+    // tracking began. The recorded streak must start at Nov 1, not October.
+    const breakDate = new Date(2026, 10, 6); // Nov 6
+    const log = [wastedOn(new Date(2026, 9, 2), 'old'), wastedOn(breakDate, 'new')];
+    expect(streakBrokenBy(log, breakDate).length).toBe(5); // Nov 1-5, not Oct 3-Nov 5
+  });
+});
+
+describe('store actions: streak persistence', () => {
+  const realDay = (n: number) => new Date(Date.now() + n * 86400000);
+
+  beforeEach(() => {
+    usePantryStore.setState({
+      items: [{ ...makeItem('milk', 5), dateAdded: realDay(-5) }],
+      dispositionLog: [],
+      streakLog: [],
+      lastStreakCheckpointAt: null,
+    });
+  });
+
+  it("disposeItem('wasted') always appends a 'wasted'-triggered streakLog entry", () => {
+    // Runs against the real wall clock, so the exact length depends on
+    // today's date relative to the tracking window — zero-length is a valid
+    // and expected outcome (waste on the window's first day). The N-1 math
+    // itself is pinned deterministically in the streakBrokenBy tests above.
+    usePantryStore.getState().disposeItem('milk', 'wasted');
+    const { streakLog } = usePantryStore.getState();
+    expect(streakLog).toHaveLength(1);
+    expect(streakLog[0].trigger).toBe('wasted');
+    expect(streakLog[0].length).toBeGreaterThanOrEqual(0);
+  });
+
+  it("disposeItem('used') records no streakLog entry", () => {
+    usePantryStore.getState().disposeItem('milk', 'used');
+    expect(usePantryStore.getState().streakLog).toEqual([]);
+  });
+
+  it('resetPantry clears streakLog and lastStreakCheckpointAt', () => {
+    usePantryStore.setState({
+      streakLog: [{ id: 's1', length: 5, endedOn: new Date(), trigger: 'wasted' }],
+      lastStreakCheckpointAt: new Date(),
+    });
+    usePantryStore.getState().resetPantry();
+    const state = usePantryStore.getState();
+    expect(state.streakLog).toEqual([]);
+    expect(state.lastStreakCheckpointAt).toBeNull();
   });
 });

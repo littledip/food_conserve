@@ -113,6 +113,11 @@ interface DispositionEventBase {
   itemName: string;
   category: ItemCategory;
   quantity: number;                // amount used or wasted in this event
+  // Quantity at purchase/add time — captured here, not just read off the
+  // live item, because a fully-disposed item is removed from pantryStore's
+  // items array entirely. Food Score's per-item ratio needs this even
+  // after the item itself is gone. See services/foodScore.ts.
+  originalQuantity: number;
   unitOfMeasure: string;
   date: Date;
   expiredAtTime: boolean;          // was the item past its effective expiration when disposed?
@@ -132,6 +137,20 @@ export interface RecallableItem {
   item: GroceryItem;
   dispositionEventId: string;
   disposedAt: Date;
+}
+
+// A persisted record of a streak that ended — either because a waste event
+// broke it ('wasted'), or because a Food Score period (e.g. month) closed
+// out while the streak was still unbroken ('period_end'), at which point
+// its length-so-far is checkpointed even though it may keep running into
+// the next period. See stores/pantryStore.ts and services/streaks.ts.
+export type StreakTrigger = 'wasted' | 'period_end';
+
+export interface StreakLogEntry {
+  id: string;
+  length: number;   // consecutive clean days
+  endedOn: Date;      // last clean day covered by this entry
+  trigger: StreakTrigger;
 }
 
 // The shape Claude vision returns for a parsed receipt. Lives outside

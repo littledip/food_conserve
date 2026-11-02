@@ -2,15 +2,21 @@ import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert } from 'rea
 import { useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../../constants/theme';
-import { useResetPantry } from '../../stores/pantryStore';
+import {
+  useResetPantry,
+  usePantryStore,
+  useStreakLog,
+  useFoodScoreForPeriod,
+  useCurrentStreakDays,
+} from '../../stores/pantryStore';
+import { bestStreakFromLog } from '../../services/streaks';
+import { getCurrentMonthBounds } from '../../services/foodScore';
 
 type TimeRange = '3m' | '6m' | '1y';
 
 const BREAKDOWN_BARS = [
   { label: 'Waste rate', value: 88, color: COLORS.midGreen },
   { label: 'Savings trend', value: 82, color: COLORS.midGreen },
-  { label: 'Streak', value: 75, color: COLORS.midGreen },
-  { label: 'Scan frequency', value: 70, color: COLORS.orange, valueColor: COLORS.orangeDark },
 ];
 
 const MONTHLY_DATA: Record<TimeRange, { month: string; amount: number }[]> = {
@@ -57,6 +63,51 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const [timeRange, setTimeRange] = useState<TimeRange>('6m');
   const resetPantry = useResetPantry();
+  const streakLog = useStreakLog();
+  const { start: monthStart, end: monthEnd } = getCurrentMonthBounds();
+  const { finalScore, longestStreakDays } = useFoodScoreForPeriod(monthStart, monthEnd);
+  const foodScore = Math.round(finalScore ?? 100);
+  const currentStreakDays = useCurrentStreakDays();
+  // "Best" spans persisted history, the current run, and the longest run in
+  // the period being scored — the last of those covers a mid-period streak
+  // that has since been broken but not yet checkpointed into streakLog.
+  const bestStreak = Math.max(
+    bestStreakFromLog(streakLog, currentStreakDays),
+    longestStreakDays,
+  );
+
+  // TEMPORARY debug export — remove once the environmental-impact seed data
+  // has been captured from a real device. Dumps current pantry contents +
+  // disposition history (covers recently used/wasted items no longer in the
+  // pantry) to the Metro console as JSON.
+  const exportPantryData = () => {
+    const { items, dispositionLog, streakLog, lastStreakCheckpointAt } = usePantryStore.getState();
+    const payload = {
+      // Raw (unformatted) so an unrevived ISO string is visible as such
+      // rather than hidden behind a .toISOString() that would throw.
+      streakLog,
+      lastStreakCheckpointAt,
+      lastStreakCheckpointAtType: typeof lastStreakCheckpointAt,
+      items: items.map((i) => ({
+        name: i.name,
+        category: i.category,
+        unitOfMeasure: i.unitOfMeasure,
+        originalQuantity: i.originalQuantity,
+        remainingQuantity: i.remainingQuantity,
+      })),
+      dispositionLog: dispositionLog.map((e) => ({
+        itemName: e.itemName,
+        category: e.category,
+        unitOfMeasure: e.unitOfMeasure,
+        quantity: e.quantity,
+        originalQuantity: e.originalQuantity,
+        disposition: e.disposition,
+        date: e.date.toISOString(),
+      })),
+    };
+    console.log('[PANTRY_EXPORT]', JSON.stringify(payload));
+    Alert.alert('Exported', 'Pantry data logged to the Metro console.');
+  };
 
   const confirmReset = () => {
     Alert.alert(
@@ -93,13 +144,12 @@ export default function ProfileScreen() {
         <View style={styles.summaryRow}>
           <View style={[styles.summaryBox, { backgroundColor: COLORS.darkGreen }]}>
             <Text style={styles.summaryLabel}>Food score</Text>
-            <Text style={styles.summaryValue}>84</Text>
-            <Text style={styles.summarySub}>Top 12%</Text>
+            <Text style={styles.summaryValue}>{foodScore}</Text>
           </View>
           <View style={[styles.summaryBox, { backgroundColor: COLORS.orange }]}>
             <Text style={[styles.summaryLabel, { color: COLORS.streakSub }]}>Current streak</Text>
-            <Text style={[styles.summaryValue, { color: COLORS.streakText }]}>14 days</Text>
-            <Text style={[styles.summarySub, { color: COLORS.streakSub }]}>Best: 21 days</Text>
+            <Text style={[styles.summaryValue, { color: COLORS.streakText }]}>{currentStreakDays} days</Text>
+            <Text style={[styles.summarySub, { color: COLORS.streakSub }]}>Best: {bestStreak} days</Text>
           </View>
         </View>
       </View>
@@ -129,7 +179,7 @@ export default function ProfileScreen() {
         {/* Food score breakdown */}
         <SectionLabel>Food score breakdown</SectionLabel>
         <View style={styles.card}>
-          {BREAKDOWN_BARS.map(({ label, value, color, valueColor }) => (
+          {BREAKDOWN_BARS.map(({ label, value, color }) => (
             <View key={label} style={styles.breakdownRow}>
               <Text style={styles.breakdownLabel}>{label}</Text>
               <View style={styles.barBg}>
@@ -140,7 +190,7 @@ export default function ProfileScreen() {
                   ]}
                 />
               </View>
-              <Text style={[styles.breakdownValue, { color: valueColor ?? COLORS.darkGreen }]}>
+              <Text style={[styles.breakdownValue, { color: COLORS.darkGreen }]}>
                 {value}
               </Text>
             </View>
@@ -222,6 +272,13 @@ export default function ProfileScreen() {
         {/* Data */}
         <SectionLabel>Data</SectionLabel>
         <View style={styles.settingsGroup}>
+          <TouchableOpacity
+            style={[styles.settingsRow, styles.settingsRowBorder]}
+            onPress={exportPantryData}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.settingsLabel}>Export pantry data (debug)</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             style={styles.settingsRow}
             onPress={confirmReset}
