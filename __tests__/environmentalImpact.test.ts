@@ -79,16 +79,17 @@ describe('resolveDefaultWasteMethod', () => {
 describe('getUnmappedWastedItems', () => {
   const usedChicken: DispositionEvent = {
     id: 'evt-1', itemId: 'a', itemName: 'Chicken', category: 'protein',
-    disposition: 'used', quantity: 1, unitOfMeasure: 'lbs', date: new Date(), expiredAtTime: false,
+    disposition: 'used', quantity: 1, originalQuantity: 1, unitOfMeasure: 'lbs',
+    date: new Date(), expiredAtTime: false,
   };
   const wastedMysterySnack: DispositionEvent = {
     id: 'evt-2', itemId: 'b', itemName: 'Mystery Snack', category: 'snacks',
-    disposition: 'wasted', wasteMethod: 'trash', quantity: 1, unitOfMeasure: 'box',
+    disposition: 'wasted', wasteMethod: 'trash', quantity: 1, originalQuantity: 1, unitOfMeasure: 'box',
     date: new Date(), expiredAtTime: true,
   };
   const wastedApples: DispositionEvent = {
     id: 'evt-3', itemId: 'c', itemName: 'Apples', category: 'produce',
-    disposition: 'wasted', wasteMethod: 'compost', quantity: 2, unitOfMeasure: 'each',
+    disposition: 'wasted', wasteMethod: 'compost', quantity: 2, originalQuantity: 2, unitOfMeasure: 'each',
     date: new Date(), expiredAtTime: true,
   };
 

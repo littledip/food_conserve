@@ -11,7 +11,10 @@ import {
   useExpiringThisWeekCount,
   useDisposeItem,
   useMoveItem,
+  useFoodScoreForPeriod,
+  useCurrentStreakDays,
 } from '../../stores/pantryStore';
+import { getCurrentMonthBounds } from '../../services/foodScore';
 
 const UPCOMING_LIST_MAX_HEIGHT = 220;
 
@@ -55,7 +58,7 @@ function UpcomingRow({ item }: { item: GroceryItem }) {
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const { foodScore, streak, savedThisMonth, projectedMonthEnd, daysElapsed, daysInMonth } = MOCK_STATS;
+  const { savedThisMonth, projectedMonthEnd, daysElapsed, daysInMonth } = MOCK_STATS;
 
   const urgentItems = useUrgentItems();
   const totalItems = useItemCount();
@@ -65,6 +68,10 @@ export default function HomeScreen() {
     .sort((a, b) => a.effectiveExpirationDate.getTime() - b.effectiveExpirationDate.getTime());
   const disposeItem = useDisposeItem();
   const moveItem = useMoveItem();
+  const { start: monthStart, end: monthEnd } = getCurrentMonthBounds();
+  const { finalScore } = useFoodScoreForPeriod(monthStart, monthEnd);
+  const foodScore = Math.round(finalScore ?? 100);
+  const currentStreakDays = useCurrentStreakDays();
 
   return (
     <View style={styles.root}>
@@ -78,10 +85,9 @@ export default function HomeScreen() {
           <View>
             <Text style={styles.scoreLabel}>Food score</Text>
             <Text style={styles.scoreValue}>{foodScore}</Text>
-            <Text style={styles.scoreSub}>Top 12% of households</Text>
           </View>
           <View style={styles.streakBadge}>
-            <Text style={styles.streakNum}>{streak}</Text>
+            <Text style={styles.streakNum}>{currentStreakDays}</Text>
             <Text style={styles.streakLabel}>day streak</Text>
           </View>
         </View>
