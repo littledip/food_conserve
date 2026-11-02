@@ -2,6 +2,7 @@ import type { GroceryItem, WasteMethod } from '../types/grocery';
 import { usePantryStore, isRecallable } from '../stores/pantryStore';
 import { buildItemFromChatInput, buildUpdatePatchFromChatInput } from './pantryActions';
 import { formatQuantity } from './quantityFormat';
+import { resolveDefaultWasteMethod } from './environmentalImpact';
 import {
   PantryChatError,
   isAbortError,
@@ -221,12 +222,13 @@ function deferConfirmTool(
   // dispose_item_wasted carries an extra, optional wasteMethod field that
   // remove_item doesn't have — validated separately.
   let itemId: string;
-  let wasteMethod: WasteMethod | undefined;
-  if (block.name === 'dispose_item_wasted') {
+  let explicitWasteMethod: WasteMethod | undefined;
+  const isDisposeWasted = block.name === 'dispose_item_wasted';
+  if (isDisposeWasted) {
     const validated = validateDisposeItemWastedInput(block.input);
     if (!validated) return { result: errorResult(block.id, 'Invalid dispose_item_wasted input.') };
     itemId = validated.itemId;
-    wasteMethod = validated.wasteMethod ?? 'trash';
+    explicitWasteMethod = validated.wasteMethod ?? undefined;
   } else {
     const validated = validateItemIdInput(block.input);
     if (!validated) return { result: errorResult(block.id, `Invalid ${block.name} input.`) };
@@ -235,6 +237,13 @@ function deferConfirmTool(
 
   const item = resolveItemId(itemId, items);
   if (!item) return { result: errorResult(block.id, `No item with id ${itemId} in the current pantry.`) };
+
+  // Pre-selects the item's typical disposal pathway (liquids -> drain,
+  // produce -> compost) when the model didn't name one explicitly — still
+  // just a starting point, correctable via the chip before confirming.
+  const wasteMethod = isDisposeWasted
+    ? explicitWasteMethod ?? resolveDefaultWasteMethod(item)
+    : undefined;
 
   callbacks.onPendingConfirmation?.({
     toolUseId: block.id,

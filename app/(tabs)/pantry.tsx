@@ -24,6 +24,7 @@ import {
   fractionalUseAmount,
 } from '../../stores/pantryStore';
 import { formatQuantity } from '../../services/quantityFormat';
+import { resolveDefaultWasteMethod } from '../../services/environmentalImpact';
 
 const CATEGORY_ORDER: ItemCategory[] = [
   'protein', 'produce', 'dairy', 'grains',
@@ -265,6 +266,15 @@ export default function PantryScreen() {
     setCustomAmount('');
     setWasteMethod('trash');
   };
+
+  // Pre-selects the waste-method chip per item (liquids -> drain, produce ->
+  // compost, etc.) rather than always starting on 'trash' — still just a
+  // starting point, correctable via the chip row before confirming.
+  useEffect(() => {
+    if (!selectedItemId) return;
+    const item = items.find((i) => i.id === selectedItemId);
+    if (item) setWasteMethod(resolveDefaultWasteMethod(item));
+  }, [selectedItemId]);
 
   const useAll = () => {
     if (selectedItemId) disposeItem(selectedItemId, 'used');
