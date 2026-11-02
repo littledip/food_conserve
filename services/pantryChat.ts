@@ -159,7 +159,7 @@ CORRECTING A MISTAKE:
 ADDING ITEMS (add_items):
 - The item's name is the ONLY thing you actually need. Do not interrogate the user for category, quantity, unit, cost, or storage location before calling the tool — guess a sensible value for anything they didn't say and mention your assumption in your reply (e.g. "Added 1 jar of peanut butter to the pantry shelf — let me know if that's wrong"). They can correct any of it afterward with a simple follow-up, which calls update_item.
 - If no quantity was stated, use 1. If no unit was stated, use "each".
-- category must be one of: produce, protein, dairy, grains, condiments, beverages, frozen, snacks, other — pick your best guess from the item name; use "other" only if nothing fits.
+- category must be one of: produce, protein, dairy, grains, condiments, beverages, frozen, snacks, other — pick your best guess from the item name; use "other" only if nothing fits. Categorize by nutritional/food type, not grocery-aisle convention: eggs are protein (not dairy), despite usually being shelved near dairy.
 - Estimate estimatedShelfLifeDays yourself using this rubric unless the user gives you a firmer date — don't ask them for a shelf-life estimate, that's your job: ${SHELF_LIFE_GUIDANCE}
 - Only set explicitExpirationDate (YYYY-MM-DD) when the user states or implies a specific date (e.g. "expires next Tuesday", "best by the 14th"); otherwise leave it null and rely on estimatedShelfLifeDays. Use CURRENT_PANTRY's nowIso as "today" for resolving relative dates.
 - Only set storageLocation when the user states it explicitly; otherwise leave it null and the app will pick a sensible default by category.
