@@ -119,6 +119,11 @@ The disposition log is already event-sourced (immutable, insert-only). The cloud
   - Offline-first write path, idempotency, per-event-type conflict semantics
   - AWS service selection (DynamoDB / AppSync / Cognito / Lambda), single-table sketch, timezone as a data-model concern
   - AI-proxy scoping, local-data import path, open questions, suggested build sequence
+- [docs/release-and-distribution.md](docs/release-and-distribution.md) — shipping to real devices (nothing set up yet):
+  - Whether Apple / Google store accounts are required, and the cheapest first path
+  - Blocking gaps in `app.config.js` (missing bundle ID, package name, camera purpose string)
+  - EAS build/submit profiles, versioning, and what OTA updates can and cannot carry
+  - Store assets checklist and the privacy disclosures receipt-image upload triggers
 
 ## Roadmap
 

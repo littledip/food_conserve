@@ -294,9 +294,17 @@ Ordered by what unblocks what, not by size:
 
 ## 11. Related: store distribution
 
-Out of scope for this document, but adjacent and frequently asked alongside it:
-shipping to real users requires an Apple Developer Program membership and a
-Google Play Developer account, plus privacy disclosures covering camera use and
-the fact that receipt images are sent to a third-party model provider. Apple
-additionally requires in-app account deletion once accounts exist — which §3's
-Cognito work introduces. Not yet documented; see the Roadmap in the README.
+Covered separately in
+[release-and-distribution.md](release-and-distribution.md): store accounts,
+EAS build pipeline, versioning, and the privacy disclosures that camera use and
+receipt-image upload trigger.
+
+Two dependencies run in the other direction, from that document back into this
+one:
+
+- The AI proxy (§7) should land **before** the first store build, so no
+  released binary ever carries an extractable Anthropic key.
+- Apple requires in-app account deletion once accounts exist, which the Cognito
+  work in §10 step 4 introduces. With an event-sourced backend, "delete my
+  account" needs a decision about what happens to a shared household's event
+  log when one member leaves — see that document's open question #6.
