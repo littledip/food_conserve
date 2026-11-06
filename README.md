@@ -4,7 +4,7 @@ Gamified food-waste reduction for households. Scan groceries in, track expiratio
 
 ## Status
 
-Phase 1 MVP, pre-launch. Local-only persistence today (AsyncStorage). Cloud sync via Supabase (event-sourced, multi-device) is fully designed but not yet implemented — see [docs/product-spec.md](docs/product-spec.md) deferred decisions and the architecture plan referenced in [Documentation](#documentation).
+Phase 1 MVP, pre-launch. Local-only persistence today (AsyncStorage). Cloud sync on AWS (event-sourced, multi-device) is designed but not yet implemented — see [docs/cloud-architecture.md](docs/cloud-architecture.md) and the deferred decisions table in [docs/product-spec.md](docs/product-spec.md).
 
 ## What it does
 
@@ -104,7 +104,7 @@ Zustand's `persist` middleware writes the `items` and `dispositionLog` slices to
 
 ### Event-sourcing direction
 
-The disposition log is already event-sourced (immutable, insert-only). The cloud-sync design (Supabase, multi-device) extends this pattern to every state change: a single `grocery_events` table as the source of truth, Postgres triggers maintaining read-optimized projections (`grocery_items`, `disposition_events`, etc.), Supabase Realtime as the pub-sub layer. Conflict resolution is implicit — events compose under server-assigned sequence numbers. This sidesteps last-write-wins issues for `remaining_quantity` and gives the Food Score / AI layers their training data for free.
+The disposition log is already event-sourced (immutable, insert-only). The cloud-sync design (AWS, multi-device) extends this pattern to every state change: an append-only event log as the source of truth, DynamoDB Streams driving a Lambda that maintains read-optimized projections (items, disposition events, barcode overrides), and AppSync subscriptions as the pub-sub layer. Conflict resolution is implicit — events compose under server-assigned sequence numbers. This sidesteps last-write-wins issues for `remainingQuantity` and gives the Food Score / AI layers their training data for free.
 
 ## Documentation
 
@@ -113,12 +113,23 @@ The disposition log is already event-sourced (immutable, insert-only). The cloud
   - Data models (`GroceryItem`, `ConsumptionProfile`, `DispositionEvent`)
   - Per-screen specifications (Home, Pantry, Scan, Profile)
   - Deferred decisions table (currently 19 rows — open architecture / UX questions parked for later, each with the options considered and the conditions for revisiting)
+- [docs/cloud-architecture.md](docs/cloud-architecture.md) — cloud sync design (not yet implemented):
+  - Why event-sourced, and the event taxonomy mapped from today's store actions
+  - Which local slices are projections vs. events (and the two that need rethinking)
+  - Offline-first write path, idempotency, per-event-type conflict semantics
+  - AWS service selection (DynamoDB / AppSync / Cognito / Lambda), single-table sketch, timezone as a data-model concern
+  - AI-proxy scoping, local-data import path, open questions, suggested build sequence
+- [docs/release-and-distribution.md](docs/release-and-distribution.md) — shipping to real devices (nothing set up yet):
+  - Whether Apple / Google store accounts are required, and the cheapest first path
+  - Blocking gaps in `app.config.js` (missing bundle ID, package name, camera purpose string)
+  - EAS build/submit profiles, versioning, and what OTA updates can and cannot carry
+  - Store assets checklist and the privacy disclosures receipt-image upload triggers
 
 ## Roadmap
 
 Tracked in detail in the deferred decisions table; high-level themes:
 
-- **Cloud sync** (Supabase, event-sourced) — design locked, implementation pending.
+- **Cloud sync** (AWS, event-sourced) — designed, implementation pending. See [docs/cloud-architecture.md](docs/cloud-architecture.md), including the suggested build sequence and seven open questions.
 - **Bare React Native migration** — Expo managed today; eject path is `npx expo prebuild` keeping Expo packages, or full swap to React Navigation + `react-native-vision-camera`.
 - **AI/ML layer** — household consumption profile blending, freezer-life baselines per category/item, Open Food Facts category mapping.
 - **Phase 2 marketplace** — Instacart / Walmart / Amazon Fresh integrations.
