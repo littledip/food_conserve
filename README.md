@@ -112,7 +112,7 @@ The disposition log is already event-sourced (immutable, insert-only). The cloud
   - App overview, platform decision, design language with color palette
   - Data models (`GroceryItem`, `ConsumptionProfile`, `DispositionEvent`)
   - Per-screen specifications (Home, Pantry, Scan, Profile)
-  - Deferred decisions table (currently 19 rows — open architecture / UX questions parked for later, each with the options considered and the conditions for revisiting)
+  - Deferred decisions table (currently 22 rows — open architecture / UX questions parked for later, each with the options considered and the conditions for revisiting)
 - [docs/cloud-architecture.md](docs/cloud-architecture.md) — cloud sync design (not yet implemented):
   - Why event-sourced, and the event taxonomy mapped from today's store actions
   - Which local slices are projections vs. events (and the two that need rethinking)
