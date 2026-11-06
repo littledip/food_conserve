@@ -117,6 +117,53 @@ const reviveStreakLogEntry = (raw: unknown): StreakLogEntry => {
   };
 };
 
+// --- Schema migration ---
+
+export const PANTRY_STORE_SCHEMA_VERSION = 2;
+
+// v1 -> v2 gained a required `originalQuantity` on DispositionEvent. The true
+// value is unrecoverable for events written before the field existed, so it is
+// backfilled from `quantity` — i.e. "assume this event disposed the item's
+// whole original amount."
+//
+// That choice is deliberately the pessimistic one. For a 'used' event it is
+// immaterial: the Food Score ratio is (original - wasted) / original, and with
+// no waste the result is 100 regardless. For a 'wasted' event it yields a
+// score of 0, the worst defensible reading, which matches the conservative
+// default already used for wasteMethod ('trash'). Guessing a larger original
+// quantity would invent a better score than the data supports.
+//
+// Events missing the field necessarily predate the build that added it. Most
+// will also predate FOOD_SCORE_TRACKING_START and so be excluded from scoring
+// entirely by filterTrackedEvents — but that is not guaranteed for an install
+// upgrading late, which is exactly why the backfill errs low rather than high.
+const backfillOriginalQuantity = (raw: unknown): unknown => {
+  const event = (raw ?? {}) as Record<string, unknown>;
+  if (typeof event.originalQuantity === 'number') return event;
+  return {
+    ...event,
+    originalQuantity: typeof event.quantity === 'number' ? event.quantity : 0,
+  };
+};
+
+// Runs BEFORE `merge`, on the raw deserialized blob — so Dates are still ISO
+// strings here and must not be touched. `merge` revives them afterward.
+//
+// The `streakLog` and `lastStreakCheckpointAt` slices were also added after v1,
+// but need no migration step: `merge` already defaults a missing streakLog to
+// [] and a missing lastStreakCheckpointAt to null.
+export const migratePantryStore = (persistedState: unknown, fromVersion: number): unknown => {
+  if (fromVersion >= 2) return persistedState;
+
+  const p = (persistedState ?? {}) as Record<string, unknown>;
+  return {
+    ...p,
+    dispositionLog: Array.isArray(p.dispositionLog)
+      ? p.dispositionLog.map(backfillOriginalQuantity)
+      : [],
+  };
+};
+
 type PantryState = {
   items: GroceryItem[];
   dispositionLog: DispositionEvent[];
@@ -403,8 +450,12 @@ export const usePantryStore = create<PantryState>()(
         }),
     }),
     {
+      // The "/v1" here is the AsyncStorage *key*, not the schema version —
+      // renaming it would orphan every existing install's data. Schema
+      // versioning is `version` below.
       name: 'food-conserve-pantry/v1',
-      version: 1,
+      version: PANTRY_STORE_SCHEMA_VERSION,
+      migrate: migratePantryStore,
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (state) => ({
         items: state.items,
