@@ -15,6 +15,7 @@ import {
   useCurrentStreakDays,
 } from '../../stores/pantryStore';
 import { getCurrentMonthBounds } from '../../services/foodScore';
+import { useProfile, greetingFor } from '../../stores/profileStore';
 
 const UPCOMING_LIST_MAX_HEIGHT = 220;
 
@@ -72,12 +73,16 @@ export default function HomeScreen() {
   const { finalScore } = useFoodScoreForPeriod(monthStart, monthEnd);
   const foodScore = Math.round(finalScore ?? 100);
   const currentStreakDays = useCurrentStreakDays();
+  const profile = useProfile();
+  // Morning / afternoon / evening by device clock, with the name omitted
+  // entirely until one is set.
+  const greeting = greetingFor(profile);
 
   return (
     <View style={styles.root}>
       {/* Green header */}
       <View style={[styles.header, { paddingTop: insets.top }]}>
-        <Text style={styles.greeting}>Good morning, Sarah</Text>
+        <Text style={styles.greeting}>{greeting}</Text>
         <Text style={styles.title}>Your day at a glance</Text>
 
         {/* Score pill */}
