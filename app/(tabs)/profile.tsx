@@ -17,11 +17,13 @@ import {
   useStreakLog,
   useFoodScoreForPeriod,
   useCurrentStreakDays,
+  useRestoreFromBackup,
 } from '../../stores/pantryStore';
 import { bestStreakFromLog } from '../../services/streaks';
 import { getCurrentMonthBounds } from '../../services/foodScore';
 import { useProfile, useSetProfile, displayName, initials } from '../../stores/profileStore';
 import { COMMON_TIME_ZONES, describeTimeZone } from '../../constants/timeZones';
+import { buildRestoredItems, buildRestoredEvents } from '../../services/restoreBackup';
 
 type TimeRange = '3m' | '6m' | '1y';
 
@@ -103,6 +105,22 @@ export default function ProfileScreen() {
   };
 
   const streakLog = useStreakLog();
+  const restoreFromBackup = useRestoreFromBackup();
+
+  // TEMPORARY one-time recovery — remove with services/restoreBackup.ts.
+  const confirmRestore = () => {
+    const items = buildRestoredItems();
+    const events = buildRestoredEvents();
+    Alert.alert(
+      'Restore Nov 1 backup?',
+      `Replaces the pantry with ${items.length} staple items and ${events.length} disposition events ` +
+        'from the Nov 1 export. Item expiration dates are estimates; perishables were not restored.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Restore', onPress: () => restoreFromBackup(items, events) },
+      ],
+    );
+  };
   const { start: monthStart, end: monthEnd } = getCurrentMonthBounds();
   const { finalScore, longestStreakDays } = useFoodScoreForPeriod(monthStart, monthEnd);
   const foodScore = Math.round(finalScore ?? 100);
@@ -336,6 +354,13 @@ export default function ProfileScreen() {
         {/* Data */}
         <SectionLabel>Data</SectionLabel>
         <View style={styles.settingsGroup}>
+          <TouchableOpacity
+            style={[styles.settingsRow, styles.settingsRowBorder]}
+            onPress={confirmRestore}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.settingsLabel}>Restore Nov 1 backup (debug)</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             style={[styles.settingsRow, styles.settingsRowBorder]}
             onPress={exportPantryData}

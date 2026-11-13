@@ -273,6 +273,9 @@ type PantryState = {
   // so months aren't missed just because no disposal happened in them —
   // also runs automatically inside disposeItem on every waste event.
   checkpointElapsedStreakPeriods: () => void;
+  // ONE-TIME recovery: replaces items and dispositionLog wholesale, so
+  // re-running it cannot duplicate rows. Remove with services/restoreBackup.ts.
+  restoreFromBackup: (items: GroceryItem[], dispositionLog: DispositionEvent[]) => void;
   resetPantry: () => void;
 };
 
@@ -510,6 +513,9 @@ export const usePantryStore = create<PantryState>()(
           barcodeCategoryOverrides: { ...state.barcodeCategoryOverrides, [barcode]: category },
         })),
 
+      restoreFromBackup: (items, dispositionLog) =>
+        set({ items, dispositionLog, streakLog: [], lastStreakCheckpointAt: null }),
+
       resetPantry: () => {
         // The one legitimate empty write. Authorize it so the destructive-write
         // guard lets it through; the flag is consumed by this set's persist.
@@ -658,6 +664,8 @@ export const useDisposeItem = () => usePantryStore((s) => s.disposeItem);
 export const useMoveItem = () => usePantryStore((s) => s.moveItem);
 
 export const useResetPantry = () => usePantryStore((s) => s.resetPantry);
+
+export const useRestoreFromBackup = () => usePantryStore((s) => s.restoreFromBackup);
 
 export const useSetBarcodeCategoryOverride = () =>
   usePantryStore((s) => s.setBarcodeCategoryOverride);
