@@ -7,6 +7,8 @@ import {
   RECALL_WINDOW_DAYS,
   reviveItem,
   reviveDispositionEvent,
+  migratePantryStore,
+  PANTRY_STORE_SCHEMA_VERSION,
   usePantryStore,
   pendingPeriodCheckpoints,
   streakBrokenBy,
@@ -756,5 +758,89 @@ describe('store actions: streak persistence', () => {
     const state = usePantryStore.getState();
     expect(state.streakLog).toEqual([]);
     expect(state.lastStreakCheckpointAt).toBeNull();
+  });
+});
+
+describe('migratePantryStore', () => {
+  // Shapes here are deliberately raw/unrevived (ISO date strings, no
+  // originalQuantity) because migrate runs before `merge` on the blob exactly
+  // as AsyncStorage returns it.
+  const v1Event = (overrides: Record<string, unknown> = {}) => ({
+    id: 'evt-1',
+    itemId: 'a',
+    itemName: 'Butternut Squash',
+    category: 'produce',
+    disposition: 'wasted',
+    wasteMethod: 'trash',
+    quantity: 2,
+    unitOfMeasure: 'each',
+    date: '2026-10-29T18:47:14.791Z',
+    expiredAtTime: true,
+    ...overrides,
+  });
+
+  it('backfills a missing originalQuantity from quantity', () => {
+    const migrated = migratePantryStore({ dispositionLog: [v1Event()] }, 1) as {
+      dispositionLog: Record<string, unknown>[];
+    };
+    expect(migrated.dispositionLog[0].originalQuantity).toBe(2);
+  });
+
+  it('leaves an existing originalQuantity untouched', () => {
+    const migrated = migratePantryStore(
+      { dispositionLog: [v1Event({ quantity: 1, originalQuantity: 12 })] }, 1,
+    ) as { dispositionLog: Record<string, unknown>[] };
+    expect(migrated.dispositionLog[0].originalQuantity).toBe(12);
+  });
+
+  it('falls back to 0 when quantity is also unusable', () => {
+    const migrated = migratePantryStore(
+      { dispositionLog: [v1Event({ quantity: undefined })] }, 1,
+    ) as { dispositionLog: Record<string, unknown>[] };
+    // computeFoodScoreForPeriod skips events whose purchased amount is <= 0,
+    // so such an event is excluded from scoring rather than scored wrongly.
+    expect(migrated.dispositionLog[0].originalQuantity).toBe(0);
+  });
+
+  it('does not revive dates — merge owns that, and migrate sees raw strings', () => {
+    const migrated = migratePantryStore({ dispositionLog: [v1Event()] }, 1) as {
+      dispositionLog: Record<string, unknown>[];
+    };
+    expect(typeof migrated.dispositionLog[0].date).toBe('string');
+  });
+
+  it('preserves other persisted slices verbatim', () => {
+    const migrated = migratePantryStore(
+      { dispositionLog: [], items: [{ id: 'x' }], barcodeCategoryOverrides: { '123': 'dairy' } }, 1,
+    ) as Record<string, unknown>;
+    expect(migrated.items).toEqual([{ id: 'x' }]);
+    expect(migrated.barcodeCategoryOverrides).toEqual({ '123': 'dairy' });
+  });
+
+  it('tolerates a missing or non-array dispositionLog', () => {
+    expect((migratePantryStore({}, 1) as { dispositionLog: unknown[] }).dispositionLog).toEqual([]);
+    expect(
+      (migratePantryStore({ dispositionLog: null }, 1) as { dispositionLog: unknown[] }).dispositionLog,
+    ).toEqual([]);
+  });
+
+  it('tolerates a null persisted state', () => {
+    expect(migratePantryStore(null, 1)).toEqual({ dispositionLog: [] });
+  });
+
+  it('is a no-op at or above the current schema version', () => {
+    const alreadyCurrent = { dispositionLog: [v1Event()] };
+    expect(migratePantryStore(alreadyCurrent, PANTRY_STORE_SCHEMA_VERSION)).toBe(alreadyCurrent);
+  });
+
+  it('produces events that survive reviveDispositionEvent afterward', () => {
+    // migrate -> merge is the real sequence; this asserts the handoff works.
+    const migrated = migratePantryStore({ dispositionLog: [v1Event()] }, 1) as {
+      dispositionLog: unknown[];
+    };
+    const revived = reviveDispositionEvent(migrated.dispositionLog[0]);
+    expect(revived.date).toBeInstanceOf(Date);
+    expect(revived.originalQuantity).toBe(2);
+    expect(revived.disposition).toBe('wasted');
   });
 });

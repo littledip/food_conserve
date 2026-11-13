@@ -117,6 +117,124 @@ const reviveStreakLogEntry = (raw: unknown): StreakLogEntry => {
   };
 };
 
+// --- Destructive-write guard ---
+
+// Set by resetPantry immediately before its set(), and consumed by the very
+// next setItem — which persist invokes synchronously from that set, so there
+// is no window for an unrelated write to claim it. No timers involved.
+let destructiveWriteAllowed = false;
+
+const rowCount = (raw: string | null): number | null => {
+  if (!raw) return null;
+  try {
+    const state = (JSON.parse(raw) as { state?: Record<string, unknown> }).state ?? {};
+    const len = (v: unknown) => (Array.isArray(v) ? v.length : 0);
+    return len(state.items) + len(state.dispositionLog) + len(state.streakLog);
+  } catch {
+    return null; // unparseable: treat as unknown, never as "empty"
+  }
+};
+
+// Wraps AsyncStorage so a write that would replace real pantry data with an
+// empty store is refused unless resetPantry explicitly authorized it.
+//
+// This exists because that is precisely how a week of real data was lost: a
+// schema-version downgrade made zustand hand `undefined` to merge, merge
+// produced a valid-looking empty state, and the next persist wrote it over
+// everything. Nothing in the normal flow legitimately empties the store —
+// only resetPantry does — so anything else doing it is a bug, and the right
+// response is to refuse the write and leave the data recoverable on disk.
+const guardedPantryStorage = {
+  getItem: (name: string) => AsyncStorage.getItem(name),
+  removeItem: (name: string) => AsyncStorage.removeItem(name),
+  setItem: async (name: string, value: string): Promise<void> => {
+    const authorized = destructiveWriteAllowed;
+    destructiveWriteAllowed = false; // consume-once
+
+    if (!authorized) {
+      const incoming = rowCount(value);
+      if (incoming === 0) {
+        const existing = rowCount(await AsyncStorage.getItem(name));
+        if (existing !== null && existing > 0) {
+          console.error(
+            `[pantryStore] REFUSED a write that would have replaced ${existing} stored rows ` +
+              'with an empty store. Data left intact on disk. This indicates a hydration ' +
+              'or migration failure — check for a schema-version mismatch.',
+          );
+          return;
+        }
+      }
+    }
+    await AsyncStorage.setItem(name, value);
+  },
+};
+
+// Exported for the guard's tests; not part of the public store surface.
+export const __authorizeDestructiveWrite = (): void => {
+  destructiveWriteAllowed = true;
+};
+
+// --- Schema migration ---
+
+export const PANTRY_STORE_SCHEMA_VERSION = 2;
+
+// v1 -> v2 gained a required `originalQuantity` on DispositionEvent. The true
+// value is unrecoverable for events written before the field existed, so it is
+// backfilled from `quantity` — i.e. "assume this event disposed the item's
+// whole original amount."
+//
+// That choice is deliberately the pessimistic one. For a 'used' event it is
+// immaterial: the Food Score ratio is (original - wasted) / original, and with
+// no waste the result is 100 regardless. For a 'wasted' event it yields a
+// score of 0, the worst defensible reading, which matches the conservative
+// default already used for wasteMethod ('trash'). Guessing a larger original
+// quantity would invent a better score than the data supports.
+//
+// Events missing the field necessarily predate the build that added it. Most
+// will also predate FOOD_SCORE_TRACKING_START and so be excluded from scoring
+// entirely by filterTrackedEvents — but that is not guaranteed for an install
+// upgrading late, which is exactly why the backfill errs low rather than high.
+const backfillOriginalQuantity = (raw: unknown): unknown => {
+  const event = (raw ?? {}) as Record<string, unknown>;
+  if (typeof event.originalQuantity === 'number') return event;
+  return {
+    ...event,
+    originalQuantity: typeof event.quantity === 'number' ? event.quantity : 0,
+  };
+};
+
+// Runs BEFORE `merge`, on the raw deserialized blob — so Dates are still ISO
+// strings here and must not be touched. `merge` revives them afterward.
+//
+// The `streakLog` and `lastStreakCheckpointAt` slices were also added after v1,
+// but need no migration step: `merge` already defaults a missing streakLog to
+// [] and a missing lastStreakCheckpointAt to null.
+export const migratePantryStore = (persistedState: unknown, fromVersion: number): unknown => {
+  // A stored version NEWER than this build's (a downgrade — e.g. checking out
+  // an older branch during development) cannot be migrated backwards. Pass it
+  // through untouched rather than letting zustand fall into its
+  // "no migrate function was provided" path, which hands `undefined` to merge
+  // and silently presents as an empty pantry. `merge` whitelists known fields,
+  // so unknown newer ones are ignored; the visible data survives.
+  if (fromVersion > PANTRY_STORE_SCHEMA_VERSION) {
+    console.warn(
+      `[pantryStore] stored schema v${fromVersion} is newer than this build (v${PANTRY_STORE_SCHEMA_VERSION}); ` +
+        'loading as-is without migration.',
+    );
+    return persistedState;
+  }
+
+  if (fromVersion >= 2) return persistedState;
+
+  const p = (persistedState ?? {}) as Record<string, unknown>;
+  return {
+    ...p,
+    dispositionLog: Array.isArray(p.dispositionLog)
+      ? p.dispositionLog.map(backfillOriginalQuantity)
+      : [],
+  };
+};
+
 type PantryState = {
   items: GroceryItem[];
   dispositionLog: DispositionEvent[];
@@ -392,7 +510,10 @@ export const usePantryStore = create<PantryState>()(
           barcodeCategoryOverrides: { ...state.barcodeCategoryOverrides, [barcode]: category },
         })),
 
-      resetPantry: () =>
+      resetPantry: () => {
+        // The one legitimate empty write. Authorize it so the destructive-write
+        // guard lets it through; the flag is consumed by this set's persist.
+        __authorizeDestructiveWrite();
         set({
           items: [],
           dispositionLog: [],
@@ -400,12 +521,18 @@ export const usePantryStore = create<PantryState>()(
           recallableItems: [],
           streakLog: [],
           lastStreakCheckpointAt: null,
-        }),
+        });
+      },
     }),
     {
+      // The "/v1" here is the AsyncStorage *key*, not the schema version —
+      // renaming it would orphan every existing install's data. Schema
+      // versioning is `version` below.
       name: 'food-conserve-pantry/v1',
-      version: 1,
-      storage: createJSONStorage(() => AsyncStorage),
+      version: PANTRY_STORE_SCHEMA_VERSION,
+      migrate: migratePantryStore,
+      // Guarded wrapper, not raw AsyncStorage — see guardedPantryStorage.
+      storage: createJSONStorage(() => guardedPantryStorage),
       partialize: (state) => ({
         items: state.items,
         dispositionLog: state.dispositionLog,
